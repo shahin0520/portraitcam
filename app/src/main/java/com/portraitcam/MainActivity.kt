@@ -400,14 +400,14 @@ class MainActivity : AppCompatActivity() {
         val mask = if (portrait) personMask(src) else null
         if (portrait && mask == null) noPerson = true
 
-        var px: IntArray? = IntArray(w * h)
+        var px = IntArray(w * h)
         src.getPixels(px, 0, w, 0, 0, w, h)
         src.recycle()
-        if (!native) tonemap(px!!, w, h, hdr)
-        sharpen(px!!, w, h, if (native) 0.5f else (0.9f + 0.15f * (zoom - 1f)).coerceIn(0.9f, 1.6f))
+        if (!native) tonemap(px, w, h, hdr)
+        sharpen(px, w, h, if (native) 0.5f else (0.9f + 0.15f * (zoom - 1f)).coerceIn(0.9f, 1.6f))
         val base = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         base.setPixels(px, 0, w, 0, 0, w, h)
-        px = null
+        px = IntArray(0)
         if (mask == null) return base
 
         val bg = blurredBackground(base, mask, blurLevel)
