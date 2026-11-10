@@ -1,18 +1,24 @@
 package com.portraitcam
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.hardware.camera2.CameraCaptureSession
+import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -30,6 +36,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -87,6 +94,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvFps: TextView
     private lateinit var tvStab: TextView
     private lateinit var tvQual: TextView
+    private lateinit var tvInfo: TextView
     private lateinit var tvBusy: TextView
     private lateinit var tvCount: TextView
     private lateinit var tvNight: TextView
@@ -167,6 +175,9 @@ class MainActivity : AppCompatActivity() {
         tvFps = findViewById(R.id.tvFps)
         tvStab = findViewById(R.id.tvStab)
         tvQual = findViewById(R.id.tvQual)
+        tvInfo = findViewById(R.id.tvInfo)
+        tvInfo.text = "DEPTH\nTEST"
+        tvInfo.setOnClickListener { showCameraReport() }
         tvBusy = findViewById(R.id.tvBusy)
         tvCount = findViewById(R.id.tvCount)
         tvNight = findViewById(R.id.tvNight)
@@ -500,6 +511,89 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Throwable) {
             false
         }
+    }
+
+    // ---------- ক্যামেরা/ডেপথ পরীক্ষা ----------
+
+    private fun showCameraReport() {
+        setBusy("ফোনের ক্যামেরা পরীক্ষা হচ্ছে…")
+        io.execute {
+            val text = try { buildCameraReport() } catch (e: Throwable) { "Error: ${e.message}" }
+            runOnUiThread {
+                setBusy(null)
+                AlertDialog.Builder(this)
+                    .setTitle("Camera / Depth report")
+                    .setMessage(text)
+                    .setPositiveButton("Copy") { _, _ ->
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("camera-report", text))
+                        Toast.makeText(this, "কপি হয়েছে। চ্যাটে পেস্ট করো", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Close", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun buildCameraReport(): String {
+        val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val sb = StringBuilder()
+        sb.append("Phone: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
+        sb.append("Camera IDs: ${cm.cameraIdList.joinToString(",")}\n")
+        if (Build.VERSION.SDK_INT >= 30) {
+            try { sb.append("Concurrent sets: ${cm.concurrentCameraIds}\n") } catch (e: Throwable) { }
+        }
+        for (id in cm.cameraIdList) {
+            try {
+                val c = cm.getCameraCharacteristics(id)
+                val facing = when (c.get(CameraCharacteristics.LENS_FACING)) {
+                    CameraCharacteristics.LENS_FACING_FRONT -> "front"
+                    CameraCharacteristics.LENS_FACING_BACK -> "back"
+                    else -> "external"
+                }
+                val level = when (c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)) {
+                    CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "LEGACY"
+                    CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "LIMITED"
+                    CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> "FULL"
+                    CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "LEVEL_3"
+                    else -> "?"
+                }
+                val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList() ?: emptyList()
+                val capNames = caps.joinToString(",") {
+                    when (it) {
+                        CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT -> "DEPTH_OUTPUT"
+                        CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA -> "LOGICAL_MULTI"
+                        CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW -> "RAW"
+                        CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR -> "MANUAL_SENSOR"
+                        CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BURST_CAPTURE -> "BURST"
+                        else -> it.toString()
+                    }
+                }
+                val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.joinToString("/") ?: "?"
+                val size = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+                val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                val fmts = map?.outputFormats?.toList() ?: emptyList()
+                val depth16 = fmts.contains(ImageFormat.DEPTH16)
+                val cloud = fmts.contains(ImageFormat.DEPTH_POINT_CLOUD)
+                val depthJpeg = Build.VERSION.SDK_INT >= 29 && fmts.contains(ImageFormat.DEPTH_JPEG)
+                val ois = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)?.toList() ?: emptyList()
+                val eis = c.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)?.toList() ?: emptyList()
+                val fps = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                    ?.filter { it.upper >= 60 }?.joinToString(",") ?: ""
+                sb.append("\n[ID $id] $facing, level=$level\n")
+                sb.append("  caps=$capNames\n")
+                sb.append("  sensor=${size?.width}x${size?.height}, focal=$focal\n")
+                sb.append("  DEPTH16=$depth16, POINT_CLOUD=$cloud, DEPTH_JPEG=$depthJpeg\n")
+                sb.append("  OIS_modes=$ois, EIS_modes=$eis, fps60_ranges=[$fps]\n")
+                if (Build.VERSION.SDK_INT >= 28) {
+                    val phys = c.physicalCameraIds
+                    if (phys.isNotEmpty()) sb.append("  physical=${phys.joinToString(",")}\n")
+                }
+            } catch (e: Throwable) {
+                sb.append("\n[ID $id] error: ${e.message}\n")
+            }
+        }
+        return sb.toString()
     }
 
     // ---------- ভিডিও (৬০fps + OIS/EIS, নিজে থেকে সেরা কম্বিনেশন খোঁজে) ----------

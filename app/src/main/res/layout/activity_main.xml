@@ -47,6 +47,7 @@
             <TextView android:id="@+id/tvFps" style="@style/Top" />
             <TextView android:id="@+id/tvStab" style="@style/Top" />
             <TextView android:id="@+id/tvQual" style="@style/Top" />
+            <TextView android:id="@+id/tvInfo" style="@style/Top" />
         </LinearLayout>
     </HorizontalScrollView>
 
