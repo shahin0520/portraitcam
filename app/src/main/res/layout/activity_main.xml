@@ -7,21 +7,41 @@
     <androidx.camera.view.PreviewView
         android:id="@+id/preview"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:layout_marginTop="56dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="56dp"
         android:layout_gravity="top"
+        android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="20dp">
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp">
+        <ImageView
+            android:id="@+id/ivFlash"
+            android:layout_width="0dp"
+            android:layout_height="26dp"
+            android:layout_weight="1"
+            android:src="@drawable/ic_flash" />
         <TextView
-            android:id="@+id/tvFlash"
-            android:layout_width="wrap_content"
+            android:id="@+id/tvHdr"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="⚡ OFF"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:padding="10dp"
+            android:text="HDR"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="3:4"
             android:textColor="#FFFFFF"
-            android:textSize="15sp" />
+            android:textSize="14sp" />
     </LinearLayout>
 
     <TextView
@@ -29,8 +49,8 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:background="#99000000"
-        android:padding="14dp"
+        android:background="#AA000000"
+        android:padding="16dp"
         android:text="প্রসেস হচ্ছে…"
         android:textColor="#FFFFFF"
         android:visibility="gone" />
@@ -41,26 +61,41 @@
         android:layout_gravity="bottom"
         android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingBottom="28dp">
+        android:paddingBottom="26dp">
+
+        <LinearLayout
+            android:id="@+id/blurRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Blur"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/blurSeek"
+                android:layout_width="220dp"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="40" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:layout_marginTop="8dp"
+            android:background="@drawable/pill_bg"
+            android:orientation="horizontal"
+            android:padding="4dp">
             <TextView android:id="@+id/z05" style="@style/Chip" android:text=".5" />
             <TextView android:id="@+id/z1" style="@style/Chip" android:text="1x" />
             <TextView android:id="@+id/z2" style="@style/Chip" android:text="2x" />
             <TextView android:id="@+id/z3" style="@style/Chip" android:text="3x" />
         </LinearLayout>
-
-        <SeekBar
-            android:id="@+id/blurSeek"
-            android:layout_width="240dp"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:max="100"
-            android:progress="40"
-            android:visibility="gone" />
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -74,16 +109,16 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="14dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingLeft="36dp"
-            android:paddingRight="36dp">
+            android:paddingLeft="40dp"
+            android:paddingRight="40dp">
             <ImageView
                 android:id="@+id/gallery"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="@drawable/chip_bg"
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:background="@drawable/thumb_bg"
                 android:scaleType="centerCrop" />
             <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
             <View
@@ -94,13 +129,13 @@
             <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
             <TextView
                 android:id="@+id/flip"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
+                android:layout_width="54dp"
+                android:layout_height="54dp"
                 android:background="@drawable/chip_bg"
                 android:gravity="center"
                 android:text="⟲"
                 android:textColor="#FFFFFF"
-                android:textSize="26sp" />
+                android:textSize="28sp" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>
