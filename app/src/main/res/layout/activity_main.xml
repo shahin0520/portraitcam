@@ -10,39 +10,50 @@
         android:layout_height="match_parent"
         android:layout_marginTop="56dp" />
 
-    <LinearLayout
+    <ImageView
+        android:id="@+id/ivFreeze"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="56dp"
+        android:scaleType="fitXY"
+        android:visibility="gone" />
+
+    <com.portraitcam.GridView
+        android:id="@+id/grid"
+        android:layout_width="match_parent"
+        android:layout_height="400dp"
+        android:layout_marginTop="56dp"
+        android:visibility="gone" />
+
+    <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:layout_gravity="top"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingLeft="12dp"
-        android:paddingRight="12dp">
-        <ImageView
-            android:id="@+id/ivFlash"
-            android:layout_width="0dp"
-            android:layout_height="26dp"
-            android:layout_weight="1"
-            android:src="@drawable/ic_flash" />
-        <TextView
-            android:id="@+id/tvHdr"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:padding="10dp"
-            android:text="HDR"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:text="3:4"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp" />
-    </LinearLayout>
+        android:scrollbars="none">
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:paddingLeft="6dp"
+            android:paddingRight="6dp">
+            <TextView android:id="@+id/tvFlash" style="@style/Top" />
+            <TextView android:id="@+id/tvTimer" style="@style/Top" />
+            <TextView android:id="@+id/tvHdr" style="@style/Top" />
+            <TextView android:id="@+id/tvGrid" style="@style/Top" />
+            <TextView android:id="@+id/tvFilter" style="@style/Top" />
+            <TextView android:id="@+id/tvRes" style="@style/Top" />
+            <TextView android:id="@+id/tvPhone" style="@style/Top" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/tvCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:textColor="#FFFFFF"
+        android:textSize="96sp"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/tvBusy"
@@ -51,7 +62,6 @@
         android:layout_gravity="center"
         android:background="#AA000000"
         android:padding="16dp"
-        android:text="প্রসেস হচ্ছে…"
         android:textColor="#FFFFFF"
         android:visibility="gone" />
 
@@ -61,7 +71,27 @@
         android:layout_gravity="bottom"
         android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingBottom="26dp">
+        android:paddingBottom="24dp">
+
+        <LinearLayout
+            android:id="@+id/beautyRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:text="Beauty"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/beautySeek"
+                android:layout_width="220dp"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="30" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/blurRow"
@@ -71,7 +101,7 @@
             android:orientation="horizontal"
             android:visibility="gone">
             <TextView
-                android:layout_width="wrap_content"
+                android:layout_width="60dp"
                 android:layout_height="wrap_content"
                 android:text="Blur"
                 android:textColor="#FFFFFF"
@@ -87,7 +117,7 @@
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:background="@drawable/pill_bg"
             android:orientation="horizontal"
             android:padding="4dp">
@@ -95,13 +125,15 @@
             <TextView android:id="@+id/z1" style="@style/Chip" android:text="1x" />
             <TextView android:id="@+id/z2" style="@style/Chip" android:text="2x" />
             <TextView android:id="@+id/z3" style="@style/Chip" android:text="3x" />
+            <TextView android:id="@+id/z5" style="@style/Chip" android:text="5x" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_marginTop="10dp"
             android:orientation="horizontal">
+            <TextView android:id="@+id/tvNight" style="@style/Mode" android:text="NIGHT" />
             <TextView android:id="@+id/tvPhoto" style="@style/Mode" android:text="PHOTO" />
             <TextView android:id="@+id/tvPortrait" style="@style/Mode" android:text="PORTRAIT" />
         </LinearLayout>
@@ -109,7 +141,7 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_marginTop="10dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingLeft="40dp"
