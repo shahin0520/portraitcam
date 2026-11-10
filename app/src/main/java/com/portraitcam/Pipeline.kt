@@ -17,6 +17,8 @@ import com.google.mlkit.vision.segmentation.Segmentation
 import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.floor
+import kotlin.math.sin
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -35,6 +37,7 @@ class Params(
     val blur: Int,
     val beauty: Int,
     val filter: Int,
+    val dark: Boolean,
     val native: Boolean
 )
 
@@ -71,25 +74,40 @@ object Pipeline {
         var sample = 1
         while ((cw / sample).toLong() * (ch / sample) > 13_000_000L) sample *= 2
 
-        val m = merge(shots, rect, sample, p.merge)
-        var bmp = Bitmap.createBitmap(m.w, m.h, Bitmap.Config.ARGB_8888)
-        bmp.setPixels(m.px, 0, m.w, 0, 0, m.w, m.h)
+        val ghost = if (p.dark) 160 else 100
+        val m = merge(shots, rect, sample, p.merge, ghost)
+        if (sample == 1) deblock(m.px, m.w, m.h, rect.left, rect.top)
+        var msum = 0L
+        var mcnt = 0
+        var si = 0
+        while (si < m.px.size) { msum += lum(m.px[si]); mcnt++; si += 37 }
+        val meanL = if (mcnt > 0) (msum / mcnt).toInt() else 120
+        var strength = 0.3f + max(0f, (110f - meanL) / 110f) * 0.6f + (z - 1f) * 0.1f - (shots.size - 1) * 0.04f
+        strength = strength.coerceIn(0.2f, 1f)
+        if (p.native) strength = min(strength, 0.3f)
+        progress("নয়েজ কমানো হচ্ছে…")
+        denoise(m.px, m.w, m.h, strength)
+        var px0 = m.px
+        var mw = m.w
+        var mh = m.h
+        val up = if (p.softZoom) min(z, 3f) else 1f
+        if (up > 1.01f) {
+            progress("ছবি বড় করা হচ্ছে…")
+            val nw = max(2, (mw * up).toInt() and 1.inv())
+            val nh = max(2, (mh * up).toInt() and 1.inv())
+            px0 = lanczos(px0, mw, mh, nw, nh)
+            mw = nw
+            mh = nh
+        }
+        var bmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(px0, 0, mw, 0, 0, mw, mh)
+        px0 = IntArray(0)
         val mx = Matrix()
         mx.postRotate(first.rot.toFloat())
         if (p.front) mx.postScale(-1f, 1f)
         val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mx, true)
         if (rotated !== bmp) bmp.recycle()
         bmp = rotated
-
-        // জুম: ধাপে ধাপে বড় করা (ঝাপসা/ব্লক কম হয়)
-        var up = if (p.softZoom) min(z, 2.5f) else 1f
-        while (up > 1.01f) {
-            val st = min(1.5f, up)
-            val nb = Bitmap.createScaledBitmap(bmp, (bmp.width * st).toInt(), (bmp.height * st).toInt(), true)
-            bmp.recycle()
-            bmp = nb
-            up /= st
-        }
 
         progress("প্রসেস হচ্ছে…")
         val w = bmp.width
@@ -277,7 +295,7 @@ object Pipeline {
         return lg
     }
 
-    private fun merge(shots: List<Shot>, rect: Rect, sample: Int, mode: Int): Merged {
+    private fun merge(shots: List<Shot>, rect: Rect, sample: Int, mode: Int, ghost: Int): Merged {
         val ref = decode(shots[0], rect, sample)
         if (shots.size == 1 || mode == 0) return ref
         val w = ref.w
@@ -318,7 +336,7 @@ object Pipeline {
                         val r1 = (p shr 16) and 255
                         val g1 = (p shr 8) and 255
                         val b1 = p and 255
-                        if (abs(r1 - r0) + abs(g1 - g0) + abs(b1 - b0) > 100) continue
+                        if (abs(r1 - r0) + abs(g1 - g0) + abs(b1 - b0) > ghost) continue
                         val n = count
                         val nr = (r0 * n + r1 + (n + 1) / 2) / (n + 1)
                         val ng = (g0 * n + g1 + (n + 1) / 2) / (n + 1)
@@ -367,8 +385,8 @@ object Pipeline {
             val lg = lumaGrid(px, w, h, gw, gh, 0, 0)
             gain = FloatArray(gw * gh)
             for (i in gain.indices) {
-                gain[i] = if (night) (135f / max(lg[i], 25f)).pow(0.55f).coerceIn(1.0f, 2.6f)
-                else (125f / max(lg[i], 30f)).pow(0.4f).coerceIn(0.88f, 1.9f)
+                gain[i] = if (night) (135f / max(lg[i], 25f)).pow(0.5f).coerceIn(1.0f, 2.0f)
+                else (125f / max(lg[i], 30f)).pow(0.35f).coerceIn(0.9f, 1.5f)
             }
         }
         val lut = IntArray(256) { i ->
@@ -387,9 +405,9 @@ object Pipeline {
                 var gr = lut[(((p shr 8) and 255) * g).toInt().coerceIn(0, 255)]
                 var bl = lut[((p and 255) * g).toInt().coerceIn(0, 255)]
                 val l = (r * 77 + gr * 150 + bl * 29) shr 8
-                r = (l + (((r - l) * 288) shr 8)).coerceIn(0, 255)
-                gr = (l + (((gr - l) * 288) shr 8)).coerceIn(0, 255)
-                bl = (l + (((bl - l) * 288) shr 8)).coerceIn(0, 255)
+                r = (l + (((r - l) * 276) shr 8)).coerceIn(0, 255)
+                gr = (l + (((gr - l) * 276) shr 8)).coerceIn(0, 255)
+                bl = (l + (((bl - l) * 276) shr 8)).coerceIn(0, 255)
                 px[row + x] = (0xFF shl 24) or (r shl 16) or (gr shl 8) or bl
             }
         }
@@ -424,11 +442,13 @@ object Pipeline {
         }
     }
 
+    // নয়েজ না বাড়িয়ে শার্প (soft coring)
     private fun sh(v: Int, avg: Int, k: Int): Int {
         val d = v - avg
-        if (d > -3 && d < 3) return v
-        val delta = ((d * k) shr 9).coerceIn(-40, 40)
-        return (v + delta).coerceIn(0, 255)
+        val ad = abs(d)
+        if (ad <= 4) return v
+        val dd = min(((ad - 4) * k) shr 9, 36)
+        return (if (d > 0) v + dd else v - dd).coerceIn(0, 255)
     }
 
     // ---------- পোর্ট্রেট ----------
@@ -682,6 +702,217 @@ object Pipeline {
                 (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
         }
         bmp.setPixels(px, 0, w, 0, 0, w, h)
+    }
+
+    // ---------- JPEG ব্লক কমানো, নয়েজ কমানো, ভালো আপস্কেল ----------
+
+    private fun smoothPix(l: Int, c: Int, r: Int): Int {
+        val nr = ((((l shr 16) and 255) + 2 * ((c shr 16) and 255) + ((r shr 16) and 255)) shr 2)
+        val ng = ((((l shr 8) and 255) + 2 * ((c shr 8) and 255) + ((r shr 8) and 255)) shr 2)
+        val nb = (((l and 255) + 2 * (c and 255) + (r and 255)) shr 2)
+        return (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+    }
+
+    // ৮x৮ JPEG ব্লকের কিনারা মসৃণ করা (জুমে "ফেটে যাওয়া" ভাব কমায়)
+    private fun deblock(px: IntArray, w: Int, h: Int, ox: Int, oy: Int) {
+        val t = 14
+        var x = (8 - (ox % 8)) % 8
+        if (x < 2) x += 8
+        while (x < w - 2) {
+            for (y in 0 until h) {
+                val i = y * w + x
+                val a = px[i - 1]
+                val b = px[i]
+                if (abs(lum(a) - lum(b)) < t) {
+                    val a2 = px[i - 2]
+                    val b2 = px[i + 1]
+                    px[i - 1] = smoothPix(a2, a, b)
+                    px[i] = smoothPix(a, b, b2)
+                }
+            }
+            x += 8
+        }
+        var y = (8 - (oy % 8)) % 8
+        if (y < 2) y += 8
+        while (y < h - 2) {
+            for (xx in 0 until w) {
+                val i = y * w + xx
+                val a = px[i - w]
+                val b = px[i]
+                if (abs(lum(a) - lum(b)) < t) {
+                    val a2 = px[i - 2 * w]
+                    val b2 = px[i + w]
+                    px[i - w] = smoothPix(a2, a, b)
+                    px[i] = smoothPix(a, b, b2)
+                }
+            }
+            y += 8
+        }
+    }
+
+    private fun blurT1(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val div = 2 * r + 1
+        for (y in 0 until h) {
+            val row = y * w
+            var s = 0
+            for (i in -r..r) s += src[row + i.coerceIn(0, w - 1)]
+            for (x in 0 until w) {
+                dst[x * h + y] = s / div
+                s += src[row + (x + r + 1).coerceAtMost(w - 1)] - src[row + (x - r).coerceAtLeast(0)]
+            }
+        }
+    }
+
+    private fun blurGray(a: IntArray, w: Int, h: Int, r: Int, passes: Int) {
+        val tmp = IntArray(w * h)
+        repeat(passes) {
+            blurT1(a, tmp, w, h, r)
+            blurT1(tmp, a, h, w, r)
+        }
+    }
+
+    // রং-নয়েজ (দানা) কমানো + ডিটেইলস না নষ্ট করে ব্রাইটনেস-নয়েজ কমানো
+    private fun denoise(px: IntArray, w: Int, h: Int, strength: Float) {
+        if (strength <= 0.05f || w < 16 || h < 16) return
+        val cw = w / 2
+        val ch = h / 2
+        val cb = IntArray(cw * ch)
+        val cr = IntArray(cw * ch)
+        for (y in 0 until ch) for (x in 0 until cw) {
+            var sb = 0
+            var sr = 0
+            for (dy in 0..1) for (dx in 0..1) {
+                val p = px[(2 * y + dy) * w + 2 * x + dx]
+                val yy = lum(p)
+                sb += (p and 255) - yy
+                sr += ((p shr 16) and 255) - yy
+            }
+            cb[y * cw + x] = sb shr 2
+            cr[y * cw + x] = sr shr 2
+        }
+        val rc = 2 + (strength * 3f).toInt()
+        blurGray(cb, cw, ch, rc, 2)
+        blurGray(cr, cw, ch, rc, 2)
+
+        val thr = (6 + 16 * strength).toInt()
+        val wFlat = ((0.6f + 0.35f * strength) * 256f).toInt()
+        val wEdge = (0.3f * 256f).toInt()
+        var prevY = IntArray(w)
+        var curY = IntArray(w)
+        var nextY = IntArray(w)
+        for (x in 0 until w) {
+            curY[x] = lum(px[x])
+            prevY[x] = curY[x]
+        }
+        for (y in 0 until h) {
+            val ny = if (y + 1 < h) y + 1 else y
+            for (x in 0 until w) nextY[x] = lum(px[ny * w + x])
+            val row = y * w
+            val cy = min(y / 2, ch - 1)
+            for (x in 1 until w - 1) {
+                val yc = curY[x]
+                var sum = yc * 2
+                var n = 2
+                var v = prevY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = prevY[x]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = prevY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = curY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = curY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = nextY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = nextY[x]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                v = nextY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                val yn = sum / n
+                val p = px[row + x]
+                val cbo = (p and 255) - yc
+                val cro = ((p shr 16) and 255) - yc
+                val g = abs(curY[x + 1] - curY[x - 1]) + abs(prevY[x] - nextY[x])
+                val wc = if (g > 30) wEdge else wFlat
+                val ci = cy * cw + min(x / 2, cw - 1)
+                val cbn = cbo + (((cb[ci] - cbo) * wc) shr 8)
+                val crn = cro + (((cr[ci] - cro) * wc) shr 8)
+                val r = (yn + crn).coerceIn(0, 255)
+                val b = (yn + cbn).coerceIn(0, 255)
+                val gg = (((yn shl 8) - 77 * r - 29 * b) / 150).coerceIn(0, 255)
+                px[row + x] = (0xFF shl 24) or (r shl 16) or (gg shl 8) or b
+            }
+            val t = prevY
+            prevY = curY
+            curY = nextY
+            nextY = t
+        }
+    }
+
+    private fun lanczosW(x: Float): Float {
+        if (x == 0f) return 1f
+        if (abs(x) >= 3f) return 0f
+        val a = (Math.PI * x).toFloat()
+        return (3f * sin(a) * sin(a / 3f)) / (a * a)
+    }
+
+    private class Taps(val idx: IntArray, val wt: FloatArray)
+
+    private fun makeTaps(nIn: Int, nOut: Int): Taps {
+        val scale = nOut.toFloat() / nIn
+        val idx = IntArray(nOut * 6)
+        val wt = FloatArray(nOut * 6)
+        for (i in 0 until nOut) {
+            val c = (i + 0.5f) / scale - 0.5f
+            val left = floor(c).toInt() - 2
+            var sum = 0f
+            for (t in 0 until 6) {
+                val sIdx = left + t
+                val wv = lanczosW(c - sIdx)
+                idx[i * 6 + t] = sIdx.coerceIn(0, nIn - 1)
+                wt[i * 6 + t] = wv
+                sum += wv
+            }
+            for (t in 0 until 6) wt[i * 6 + t] /= sum
+        }
+        return Taps(idx, wt)
+    }
+
+    // Lanczos আপস্কেল: সাধারণ বড় করার চেয়ে অনেক ধারালো, ব্লক ছাড়া
+    private fun lanczos(src: IntArray, w: Int, h: Int, nw: Int, nh: Int): IntArray {
+        val tx = makeTaps(w, nw)
+        val ty = makeTaps(h, nh)
+        val tmp = IntArray(nw * h)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until nw) {
+                var r = 0f
+                var g = 0f
+                var b = 0f
+                for (t in 0 until 6) {
+                    val p = src[row + tx.idx[x * 6 + t]]
+                    val wv = tx.wt[x * 6 + t]
+                    r += ((p shr 16) and 255) * wv
+                    g += ((p shr 8) and 255) * wv
+                    b += (p and 255) * wv
+                }
+                tmp[y * nw + x] = (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or
+                    (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
+            }
+        }
+        val out = IntArray(nw * nh)
+        val ro = IntArray(6)
+        for (y in 0 until nh) {
+            for (t in 0 until 6) ro[t] = ty.idx[y * 6 + t] * nw
+            for (x in 0 until nw) {
+                var r = 0f
+                var g = 0f
+                var b = 0f
+                for (t in 0 until 6) {
+                    val p = tmp[ro[t] + x]
+                    val wv = ty.wt[y * 6 + t]
+                    r += ((p shr 16) and 255) * wv
+                    g += ((p shr 8) and 255) * wv
+                    b += (p and 255) * wv
+                }
+                out[y * nw + x] = (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or
+                    (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
+            }
+        }
+        return out
     }
 
     // ---------- ব্লার সহায়ক ----------
