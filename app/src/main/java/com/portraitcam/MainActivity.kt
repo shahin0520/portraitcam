@@ -279,6 +279,7 @@ class MainActivity : AppCompatActivity() {
         updateTop()
         updateModeUi()
         main.postDelayed(fpsTick, 1000)
+        io.execute { Pipeline.warmUp() }
         if (cameraGranted()) {
             startCamera()
             if (!audioGranted()) permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))

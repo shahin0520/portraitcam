@@ -15,6 +15,9 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.segmentation.Segmentation
 import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.floor
@@ -53,6 +56,46 @@ object Pipeline {
                 .setDetectorMode(SelfieSegmenterOptions.SINGLE_IMAGE_MODE).build()
         )
     }
+    private val subjectSeg by lazy {
+        SubjectSegmentation.getClient(
+            SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask().build()
+        )
+    }
+
+    // অ্যাপ খোলার সময় একবার চালিয়ে মডেল নামিয়ে রাখা
+    fun warmUp() {
+        try {
+            val b = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+            Tasks.await(subjectSeg.process(InputImage.fromBitmap(b, 0)), 60, TimeUnit.SECONDS)
+        } catch (e: Throwable) { }
+    }
+
+    // দ্বিতীয় মডেল: ছবির মূল বিষয় (subject) আলাদা করে। না পেলে null
+    private fun subjectConf(src: Bitmap, mw: Int, mh: Int): FloatArray? {
+        return try {
+            val s = 768f / max(src.width, src.height)
+            val iw = max(16, (src.width * s).toInt())
+            val ih = max(16, (src.height * s).toInt())
+            val small = Bitmap.createScaledBitmap(src, iw, ih, true)
+            val res = Tasks.await(subjectSeg.process(InputImage.fromBitmap(small, 0)), 20, TimeUnit.SECONDS)
+            small.recycle()
+            val fb = res.foregroundConfidenceMask ?: return null
+            fb.rewind()
+            if (fb.remaining() < iw * ih) return null
+            val out = FloatArray(mw * mh)
+            for (y in 0 until mh) {
+                val sy = min(ih - 1, y * ih / mh)
+                for (x in 0 until mw) {
+                    val sx = min(iw - 1, x * iw / mw)
+                    out[y * mw + x] = fb.get(sy * iw + sx)
+                }
+            }
+            out
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
     private val faceDet by lazy {
         FaceDetection.getClient(
             FaceDetectorOptions.Builder()
@@ -475,6 +518,14 @@ object Pipeline {
             val mh = m.height
             val conf = FloatArray(mw * mh)
             for (i in conf.indices) conf[i] = buf.float
+            val subj = subjectConf(src, mw, mh)
+            if (subj != null) {
+                var cs = 0f
+                var ci = 0f
+                for (i in conf.indices) { cs += conf[i]; ci += min(conf[i], subj[i]) }
+                // দুই মডেলের মিল নিলে চেয়ার/জালের মতো ভুল অংশ বাদ যায়। বেশি কেটে গেলে বাদ
+                if (ci >= 0.5f * cs) for (i in conf.indices) conf[i] = min(conf[i], subj[i])
+            }
             cleanMask(conf, mw, mh)
             var sum = 0f
             for (v in conf) sum += v
@@ -502,10 +553,10 @@ object Pipeline {
             gb.getPixels(gp, 0, gw, 0, 0, gw, gh)
             gb.recycle()
             val guide = FloatArray(gw * gh) { lum(gp[it]) / 255f }
-            val q = guidedFilter(guide, pArr, gw, gh, 8, 0.002f)
+            val q = guidedFilter(guide, pArr, gw, gh, 8, 0.001f)
             val out = IntArray(gw * gh)
             for (i in out.indices) {
-                val t = smooth01((q[i] - 0.35f) / 0.3f)
+                val t = smooth01((q[i] - 0.45f) / 0.25f)
                 out[i] = (t * 255f).toInt() shl 24
             }
             val mb = Bitmap.createBitmap(gw, gh, Bitmap.Config.ARGB_8888)
@@ -627,6 +678,47 @@ object Pipeline {
         return out
     }
 
+    // শুধু ব্যাকগ্রাউন্ডের পিক্সেল দিয়ে ব্লার (মানুষের রঙ ছড়ায় না)
+    private fun discBlurW(px: IntArray, wt: IntArray, w: Int, h: Int, rad: Int): IntArray {
+        val out = IntArray(w * h)
+        val xs = IntArray(2 * rad + 1)
+        for (i in -rad..rad) xs[i + rad] = sqrt((rad * rad - i * i).toDouble()).toInt()
+        for (y in 0 until h) for (x in 0 until w) {
+            var sr = 0
+            var sg = 0
+            var sb = 0
+            var sw = 0
+            var ur = 0
+            var ug = 0
+            var ub = 0
+            var n = 0
+            for (dy in -rad..rad) {
+                val yy = y + dy
+                if (yy < 0 || yy >= h) continue
+                val dm = xs[dy + rad]
+                val xa = max(0, x - dm)
+                val xb = min(w - 1, x + dm)
+                val row = yy * w
+                for (xx in xa..xb) {
+                    val p = px[row + xx]
+                    val wv = wt[row + xx]
+                    val r = (p shr 16) and 255
+                    val g = (p shr 8) and 255
+                    val b = p and 255
+                    sr += r * wv; sg += g * wv; sb += b * wv; sw += wv
+                    ur += r; ug += g; ub += b
+                    n++
+                }
+            }
+            out[y * w + x] = if (sw > 255) {
+                (0xFF shl 24) or ((sr / sw) shl 16) or ((sg / sw) shl 8) or (sb / sw)
+            } else {
+                (0xFF shl 24) or ((ur / n) shl 16) or ((ug / n) shl 8) or (ub / n)
+            }
+        }
+        return out
+    }
+
     private fun discBlur(px: IntArray, w: Int, h: Int, rad: Int): IntArray {
         val out = IntArray(w * h)
         val xs = IntArray(2 * rad + 1)
@@ -656,52 +748,59 @@ object Pipeline {
         return out
     }
 
-    // লেন্সের মতো গোল (bokeh) ব্লার: মানুষের কাছে হালকা, দূরে বেশি
+    // লেন্সের মতো গোল ব্লার: মানুষের কাছে হালকা, দূরে বেশি। মানুষের রঙ কখনো ব্যাকগ্রাউন্ডে মেশে না
     private fun blurredBackground(base: Bitmap, mask: Bitmap, level: Int): Bitmap {
         val s = 900f / max(base.width, base.height)
-        val sw = max(8, (base.width * s).toInt())
-        val sh = max(8, (base.height * s).toInt())
+        val sw = max(12, (base.width * s).toInt())
+        val sh = max(12, (base.height * s).toInt())
         val small = Bitmap.createScaledBitmap(base, sw, sh, true)
-        val sp = IntArray(sw * sh)
-        small.getPixels(sp, 0, sw, 0, 0, sw, sh)
+        val tw = max(4, sw / 3)
+        val th = max(4, sh / 3)
+        val third = Bitmap.createScaledBitmap(small, tw, th, true)
+        small.recycle()
+        val tp = IntArray(tw * th)
+        third.getPixels(tp, 0, tw, 0, 0, tw, th)
+        third.recycle()
 
-        // উজ্জ্বল আলো বাড়ানো, যাতে ব্লারে গোল আলো তৈরি হয়
-        val boosted = IntArray(sw * sh)
-        for (i in sp.indices) {
-            val p = sp[i]
+        val mt = Bitmap.createScaledBitmap(mask, tw, th, true)
+        val mtp = IntArray(tw * th)
+        mt.getPixels(mtp, 0, tw, 0, 0, tw, th)
+        mt.recycle()
+        val wbg = IntArray(tw * th) { 255 - min(255, (mtp[it] ushr 24) * 4) }
+
+        // হালকা আলো-ফুল (শুধু খুব উজ্জ্বল অংশে)
+        for (i in tp.indices) {
+            val p = tp[i]
             var r = (p shr 16) and 255
             var g = (p shr 8) and 255
             var b = p and 255
-            if (r > 210) r = min(255, r + (r - 210) * 3)
-            if (g > 210) g = min(255, g + (g - 210) * 3)
-            if (b > 210) b = min(255, b + (b - 210) * 3)
-            boosted[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            if (r > 238) r = min(255, r + (r - 238) * 2)
+            if (g > 238) g = min(255, g + (g - 238) * 2)
+            if (b > 238) b = min(255, b + (b - 238) * 2)
+            tp[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
-        val hw = sw / 2
-        val hh = sh / 2
-        val bb = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-        bb.setPixels(boosted, 0, sw, 0, 0, sw, sh)
-        val half = Bitmap.createScaledBitmap(bb, hw, hh, true)
-        val hp = IntArray(hw * hh)
-        half.getPixels(hp, 0, hw, 0, 0, hw, hh)
-        val rad = 3 + (level * 0.12f).toInt()
-        val blurredHalf = discBlur(hp, hw, hh, rad)
-        val bh = Bitmap.createBitmap(hw, hh, Bitmap.Config.ARGB_8888)
-        bh.setPixels(blurredHalf, 0, hw, 0, 0, hw, hh)
-        val strongBmp = Bitmap.createScaledBitmap(bh, sw, sh, true)
+        val rad = max(2, (3 + (level * 0.12f).toInt()) * 2 / 3)
+        val strongT = discBlurW(tp, wbg, tw, th, rad)
+        val mildT = discBlurW(tp, wbg, tw, th, max(1, rad / 2))
+        val sb = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        sb.setPixels(strongT, 0, tw, 0, 0, tw, th)
+        val strongBmp = Bitmap.createScaledBitmap(sb, sw, sh, true)
+        sb.recycle()
+        val mb = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        mb.setPixels(mildT, 0, tw, 0, 0, tw, th)
+        val mildBmp = Bitmap.createScaledBitmap(mb, sw, sh, true)
+        mb.recycle()
         val a1 = IntArray(sw * sh)
-        strongBmp.getPixels(a1, 0, sw, 0, 0, sw, sh)
-
-        val mildHalf = discBlur(hp, hw, hh, max(2, rad / 2))
-        val mh2 = Bitmap.createBitmap(hw, hh, Bitmap.Config.ARGB_8888)
-        mh2.setPixels(mildHalf, 0, hw, 0, 0, hw, hh)
-        val mildBmp = Bitmap.createScaledBitmap(mh2, sw, sh, true)
         val b1 = IntArray(sw * sh)
+        strongBmp.getPixels(a1, 0, sw, 0, 0, sw, sh)
         mildBmp.getPixels(b1, 0, sw, 0, 0, sw, sh)
+        strongBmp.recycle()
+        mildBmp.recycle()
 
         val ms = Bitmap.createScaledBitmap(mask, sw, sh, true)
         val mp = IntArray(sw * sh)
         ms.getPixels(mp, 0, sw, 0, 0, sw, sh)
+        ms.recycle()
         for (i in mp.indices) {
             val a = mp[i] ushr 24
             mp[i] = (0xFF shl 24) or (a shl 16) or (a shl 8) or a
