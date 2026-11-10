@@ -16,6 +16,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.core.Camera
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import android.util.Size
+import android.widget.SeekBar
+import kotlin.math.abs
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -36,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPhoto: TextView
     private lateinit var tvPortrait: TextView
     private lateinit var gallery: ImageView
+    private lateinit var blurSeek: SeekBar
+    @Volatile private var noPerson = false
     private lateinit var chips: List<Pair<TextView, Float>>
 
     private var provider: ProcessCameraProvider? = null
@@ -69,6 +77,7 @@ class MainActivity : AppCompatActivity() {
         tvPhoto = findViewById(R.id.tvPhoto)
         tvPortrait = findViewById(R.id.tvPortrait)
         gallery = findViewById(R.id.gallery)
+        blurSeek = findViewById(R.id.blurSeek)
         gallery.clipToOutline = true
         gallery.outlineProvider = ViewOutlineProvider.BACKGROUND
 
@@ -133,6 +142,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setMode(p: Boolean) {
         portrait = p
+        blurSeek.visibility = if (p) View.VISIBLE else View.GONE
         tvPhoto.setTextColor(if (!p) 0xFFFFD60A.toInt() else Color.WHITE)
         tvPortrait.setTextColor(if (p) 0xFFFFD60A.toInt() else Color.WHITE)
     }
@@ -144,9 +154,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun bind() {
         val p = provider ?: return
-        val pv = Preview.Builder().build().also { it.setSurfaceProvider(preview.surfaceProvider) }
+        val pv = Preview.Builder().setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY).build()).build().also { it.setSurfaceProvider(preview.surfaceProvider) }
         imageCapture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(ResolutionStrategy(Size(4000, 3000), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+                    .build())
             .setFlashMode(flash).build()
         val sel = CameraSelector.Builder().requireLensFacing(lens).build()
         try {
@@ -182,6 +197,8 @@ class MainActivity : AppCompatActivity() {
         tvBusy.visibility = View.VISIBLE
         val front = lens == CameraSelector.LENS_FACING_FRONT
         val doPortrait = portrait
+        val zoom = camera?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
+        val blurLevel = blurSeek.progress
         ic.takePicture(io, object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 try {
@@ -197,11 +214,13 @@ class MainActivity : AppCompatActivity() {
                         val s = 4096f / longSide
                         bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * s).toInt(), (bmp.height * s).toInt(), true)
                     }
-                    val out = process(bmp, doPortrait)
+                    val out = process(bmp, doPortrait, zoom, blurLevel)
+                    bmp.recycle()
                     val uri = save(out)
                     val thumb = Bitmap.createScaledBitmap(out, 160, 160 * out.height / out.width, true)
                     runOnUiThread {
                         lastUri = uri
+                        if (noPerson) Toast.makeText(this@MainActivity, "মানুষ পাওয়া যায়নি, সাধারণ ছবি সেভ হয়েছে", Toast.LENGTH_LONG).show()
                         gallery.setImageBitmap(thumb)
                         Toast.makeText(this@MainActivity, "ছবি সেভ হয়েছে (Pictures/PortraitCam)", Toast.LENGTH_SHORT).show()
                     }
@@ -239,28 +258,29 @@ class MainActivity : AppCompatActivity() {
         return ColorMatrixColorFilter(sat)
     }
 
-    private fun process(src: Bitmap, portrait: Boolean): Bitmap {
+    private fun process(src: Bitmap, portrait: Boolean, zoom: Float, blurLevel: Int): Bitmap {
         val w = src.width
         val h = src.height
+        noPerson = false
+        val mask = if (portrait) personMask(src) else null
+        if (portrait && mask == null) noPerson = true
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         val enh = Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = enhanceFilter() }
         val dst = Rect(0, 0, w, h)
-
-        val mask = if (portrait) personMask(src) else null
         if (mask == null) {
             c.drawBitmap(src, 0f, 0f, enh)
-            return out
+        } else {
+            val bg = blurredBackground(src, blurLevel)
+            c.drawBitmap(bg, null, dst, enh)
+            val layer = src.copy(Bitmap.Config.ARGB_8888, true)
+            val lc = Canvas(layer)
+            val mp = Paint(Paint.FILTER_BITMAP_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
+            lc.drawBitmap(mask, null, dst, mp)
+            c.drawBitmap(layer, 0f, 0f, enh)
+            layer.recycle()
         }
-        // ঝাপসা ব্যাকগ্রাউন্ড
-        val bg = blurredBackground(src)
-        c.drawBitmap(bg, null, dst, enh)
-        // শার্প মানুষ (মাস্ক দিয়ে কাটা)
-        val layer = src.copy(Bitmap.Config.ARGB_8888, true)
-        val lc = Canvas(layer)
-        val mp = Paint(Paint.FILTER_BITMAP_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
-        lc.drawBitmap(mask, null, dst, mp)
-        c.drawBitmap(layer, 0f, 0f, enh)
+        sharpen(out, zoom)
         return out
     }
 
@@ -273,26 +293,65 @@ class MainActivity : AppCompatActivity() {
             val mw = m.width
             val mh = m.height
             val px = IntArray(mw * mh)
+            var sum = 0L
             for (i in px.indices) {
                 val conf = buf.float
-                // কিনারা পরিষ্কার করার smoothstep
-                val t = ((conf - 0.35f) / 0.4f).coerceIn(0f, 1f)
+                val t = ((conf - 0.3f) / 0.5f).coerceIn(0f, 1f)
                 val a = (t * t * (3f - 2f * t) * 255f).toInt()
-                px[i] = a shl 24
+                sum += a
+                px[i] = (0xFF shl 24) or (a shl 16) or (a shl 8) or a
             }
+            if (sum.toFloat() / (px.size * 255f) < 0.02f) return null
+            val g = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
+            g.setPixels(px, 0, mw, 0, 0, mw, mh)
+            val soft = boxBlur(g, 2, 2)   // কিনারা নরম করা
+            val sp = IntArray(mw * mh)
+            soft.getPixels(sp, 0, mw, 0, 0, mw, mh)
+            for (i in sp.indices) sp[i] = (sp[i] and 255) shl 24
             val mb = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
-            mb.setPixels(px, 0, mw, 0, 0, mw, mh)
+            mb.setPixels(sp, 0, mw, 0, 0, mw, mh)
             mb
         } catch (e: Throwable) {
             null
         }
     }
 
-    private fun blurredBackground(src: Bitmap): Bitmap {
-        val s = 420f / max(src.width, src.height)
+    private fun blurredBackground(src: Bitmap, level: Int): Bitmap {
+        val s = 1000f / max(src.width, src.height)
         val small = Bitmap.createScaledBitmap(src, (src.width * s).toInt().coerceAtLeast(2), (src.height * s).toInt().coerceAtLeast(2), true)
-        return boxBlur(small, 9, 3)
+        val r = 3 + (level * 0.13f).toInt()
+        return boxBlur(small, r, 3)
     }
+
+    // ডিটেইলস বাড়ানো (জুম করলে বেশি)
+    private fun sharpen(bmp: Bitmap, zoom: Float) {
+        val w = bmp.width
+        val h = bmp.height
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
+        val bl = px.copyOf()
+        val tmp = IntArray(w * h)
+        repeat(2) {
+            blurT(bl, tmp, w, h, 2)
+            blurT(tmp, bl, h, w, 2)
+        }
+        val amt = (0.7f + 0.15f * (zoom - 1f)).coerceIn(0.7f, 1.5f)
+        for (i in px.indices) {
+            val p = px[i]
+            val q = bl[i]
+            val r = (p shr 16) and 255
+            val g = (p shr 8) and 255
+            val b = p and 255
+            val nr = sh(r, r - ((q shr 16) and 255), amt)
+            val ng = sh(g, g - ((q shr 8) and 255), amt)
+            val nb = sh(b, b - (q and 255), amt)
+            px[i] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+        }
+        bmp.setPixels(px, 0, w, 0, 0, w, h)
+    }
+
+    private fun sh(v: Int, d: Int, amt: Float): Int =
+        (if (abs(d) < 3) v else v + (d * amt).toInt()).coerceIn(0, 255)
 
     private fun boxBlur(bmp: Bitmap, r: Int, passes: Int): Bitmap {
         val w = bmp.width
@@ -341,7 +400,7 @@ class MainActivity : AppCompatActivity() {
         }
         val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
             ?: throw IllegalStateException("সেভ করা যায়নি")
-        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 96, it) }
+        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 98, it) }
         v.clear()
         v.put(MediaStore.Images.Media.IS_PENDING, 0)
         contentResolver.update(uri, v, null, null)

@@ -53,6 +53,15 @@
             <TextView android:id="@+id/z3" style="@style/Chip" android:text="3x" />
         </LinearLayout>
 
+        <SeekBar
+            android:id="@+id/blurSeek"
+            android:layout_width="240dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:max="100"
+            android:progress="40"
+            android:visibility="gone" />
+
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
