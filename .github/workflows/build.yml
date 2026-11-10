@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,7 +18,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: 8.5
-      - run: gradle assembleDebug --no-daemon
+      - name: Build
+        run: gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: Save log on failure
+        if: failure()
+        run: |
+          git config user.name bot && git config user.email bot@x.y
+          git checkout -b buildlog
+          grep -E "^e: |error:|What went wrong|Could not|FAILED|> " build.log | head -60 > errors.txt || true
+          git add -f errors.txt
+          git commit -m "errors" && git push -f origin buildlog
       - uses: actions/upload-artifact@v4
         with:
           name: PortraitCam-apk
