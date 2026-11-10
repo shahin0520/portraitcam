@@ -6,9 +6,12 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -76,6 +79,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvFlash: TextView
     private lateinit var tvTimer: TextView
     private lateinit var tvHdr: TextView
+    private lateinit var tvNr: TextView
     private lateinit var tvGrid: TextView
     private lateinit var tvFilter: TextView
     private lateinit var tvRes: TextView
@@ -107,17 +111,24 @@ class MainActivity : AppCompatActivity() {
     private var lens = CameraSelector.LENS_FACING_BACK
     private var flash = ImageCapture.FLASH_MODE_OFF
     private var mode = 1            // 0 NIGHT, 1 PHOTO, 2 PORTRAIT, 3 VIDEO
-    private var hdrOn = true
+    private var hdrMode = 1          // 0 OFF, 1 AUTO, 2 ON
+    private var nrOn = true
+    private var ladder: List<Pair<Boolean, Int>> = listOf(Pair(false, 0))
+    private var ladderIdx = 0
+    private var activeStab = "OFF"
+    private var fpsLow = 0
+    @Volatile private var measuredFps = 0f
+    @Volatile private var fpsT0 = 0L
+    @Volatile private var fpsCount = 0
     private var gridOn = false
     private var timerSec = 0
     private var filterIdx = 0
-    private var maxRes = false
+    private var resIdx = 1
     private var useNative = false
     private var nativeMode = false
     private var fps60 = true
     private var stabOn = true
     private var videoQ = 0
-    private var videoFallbackDone = false
     private var busy = false
     private var lastUri: Uri? = null
     private val io = Executors.newSingleThreadExecutor()
@@ -148,6 +159,7 @@ class MainActivity : AppCompatActivity() {
         tvFlash = findViewById(R.id.tvFlash)
         tvTimer = findViewById(R.id.tvTimer)
         tvHdr = findViewById(R.id.tvHdr)
+        tvNr = findViewById(R.id.tvNr)
         tvGrid = findViewById(R.id.tvGrid)
         tvFilter = findViewById(R.id.tvFilter)
         tvRes = findViewById(R.id.tvRes)
@@ -202,16 +214,17 @@ class MainActivity : AppCompatActivity() {
             timerSec = when (timerSec) { 0 -> 3; 3 -> 10; else -> 0 }
             updateTop()
         }
-        tvHdr.setOnClickListener { hdrOn = !hdrOn; updateTop(); bind() }
+        tvHdr.setOnClickListener { hdrMode = (hdrMode + 1) % 3; updateTop(); bind() }
+        tvNr.setOnClickListener { nrOn = !nrOn; updateTop() }
         tvGrid.setOnClickListener { gridOn = !gridOn; updateTop() }
         tvFilter.setOnClickListener { filterIdx = (filterIdx + 1) % filterNames.size; updateTop() }
-        tvRes.setOnClickListener { maxRes = !maxRes; updateTop(); bind() }
+        tvRes.setOnClickListener { resIdx = (resIdx + 1) % 3; updateTop(); bind() }
         tvPhone.setOnClickListener { useNative = !useNative; updateTop(); bind() }
         tvFps.setOnClickListener {
-            if (recording == null) { fps60 = !fps60; videoFallbackDone = false; updateTop(); bind() }
+            if (recording == null) { fps60 = !fps60; ladderIdx = 0; updateTop(); bind() }
         }
         tvStab.setOnClickListener {
-            if (recording == null) { stabOn = !stabOn; videoFallbackDone = false; updateTop(); bind() }
+            if (recording == null) { stabOn = !stabOn; ladderIdx = 0; updateTop(); bind() }
         }
         tvQual.setOnClickListener {
             if (recording == null) { videoQ = (videoQ + 1) % qualNames.size; updateTop(); bind() }
@@ -265,6 +278,7 @@ class MainActivity : AppCompatActivity() {
 
         updateTop()
         updateModeUi()
+        main.postDelayed(fpsTick, 1000)
         if (cameraGranted()) {
             startCamera()
             if (!audioGranted()) permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
@@ -288,7 +302,7 @@ class MainActivity : AppCompatActivity() {
         if (mode == 3) camera?.cameraControl?.enableTorch(false)
         mode = m
         if (mode == 3 && flash == ImageCapture.FLASH_MODE_AUTO) flash = ImageCapture.FLASH_MODE_OFF
-        videoFallbackDone = false
+        ladderIdx = 0
         updateModeUi()
         updateTop()
         bind()
@@ -302,7 +316,7 @@ class MainActivity : AppCompatActivity() {
         blurRow.visibility = if (mode == 2 && !nativeMode) View.VISIBLE else View.GONE
         beautyRow.visibility = if (mode == 1 || mode == 2) View.VISIBLE else View.GONE
         val v = mode == 3
-        listOf(tvHdr, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
+        listOf(tvHdr, tvNr, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
         listOf(tvFps, tvStab, tvQual).forEach { it.visibility = if (v) View.VISIBLE else View.GONE }
         shutter.setBackgroundResource(
             if (v) (if (recording != null) R.drawable.shutter_stop else R.drawable.shutter_video)
@@ -320,20 +334,22 @@ class MainActivity : AppCompatActivity() {
             else -> "OFF"
         }
         tvTimer.text = "TIMER\n" + (if (timerSec == 0) "OFF" else "${timerSec}s")
-        tvHdr.text = "HDR\n" + (if (hdrOn) "ON" else "OFF")
+        tvHdr.text = "HDR\n" + listOf("OFF", "AUTO", "ON")[hdrMode]
+        tvNr.text = "NR\n" + (if (nrOn) "ON" else "OFF")
         tvGrid.text = "GRID\n" + (if (gridOn) "ON" else "OFF")
         tvFilter.text = "FILTER\n" + filterNames[filterIdx]
-        tvRes.text = "RES\n" + (if (maxRes) "MAX" else "12MP")
+        tvRes.text = "RES\n" + listOf("12MP", "16MP", "MAX")[resIdx]
         tvPhone.text = "PHONE\n" + (if (useNative) "ON" else "OFF")
         tvFps.text = "FPS\n" + (if (fps60) "60" else "30")
-        tvStab.text = "STAB\n" + (if (stabOn) "OIS+EIS" else "OFF")
+        tvStab.text = "STAB\n" + (if (stabOn) activeStab else "OFF")
         tvQual.text = "QUALITY\n" + qualNames[videoQ]
         tint(tvFlash, flash != ImageCapture.FLASH_MODE_OFF)
         tint(tvTimer, timerSec != 0)
-        tint(tvHdr, hdrOn)
+        tint(tvHdr, hdrMode != 0)
+        tint(tvNr, nrOn)
         tint(tvGrid, gridOn)
         tint(tvFilter, filterIdx != 0)
-        tint(tvRes, maxRes)
+        tint(tvRes, resIdx == 2)
         tint(tvPhone, useNative)
         tint(tvFps, fps60)
         tint(tvStab, stabOn)
@@ -403,7 +419,7 @@ class MainActivity : AppCompatActivity() {
             videoCapture = null
             val portrait = mode == 2
             val extMode = if (portrait) ExtensionMode.BOKEH else ExtensionMode.HDR
-            val wantNative = useNative && mode != 0 && (portrait || hdrOn)
+            val wantNative = useNative && mode != 0 && (portrait || hdrMode != 0)
             val em = extMgr
             if (wantNative && em != null) {
                 try {
@@ -442,12 +458,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun bindUse(p: ProcessCameraProvider, sel: CameraSelector, ext: Boolean): Boolean {
         return try {
             val pv = Preview.Builder().build().also { it.setSurfaceProvider(preview.surfaceProvider) }
             val b = ImageCapture.Builder().setFlashMode(flash)
             if (!ext) {
-                val target = if (maxRes) Size(8200, 6200) else Size(4000, 3000)
+                val target = when (resIdx) {
+                    0 -> Size(4000, 3000)
+                    1 -> Size(4640, 3480)
+                    else -> Size(8200, 6200)
+                }
                 b.setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 b.setResolutionSelector(
                     ResolutionSelector.Builder()
@@ -456,6 +477,20 @@ class MainActivity : AppCompatActivity() {
                             ResolutionStrategy(target, ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
                         ).build()
                 )
+                // ক্যামেরার নিজের সেরা মানের নয়েজ রিডাকশন
+                try {
+                    val infos = sel.filter(p.availableCameraInfos)
+                    if (infos.isNotEmpty()) {
+                        val c2 = Camera2CameraInfo.from(infos[0])
+                        val nm = c2.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
+                        if (nm != null && nm.contains(CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)) {
+                            Camera2Interop.Extender(b).setCaptureRequestOption(
+                                CaptureRequest.NOISE_REDUCTION_MODE,
+                                CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                            )
+                        }
+                    }
+                } catch (e: Throwable) { }
             }
             imageCapture = b.build()
             p.unbindAll()
@@ -466,24 +501,85 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- ভিডিও (৬০fps + OIS/EIS) ----------
+    // ---------- ভিডিও (৬০fps + OIS/EIS, নিজে থেকে সেরা কম্বিনেশন খোঁজে) ----------
+
+    private val fpsTick = object : Runnable {
+        override fun run() {
+            if (mode == 3) {
+                val m = measuredFps.toInt()
+                tvFps.text = "FPS\n" + (if (fps60) "60" else "30") + (if (m > 0) " ($m)" else "")
+                if (recording == null && fps60 && m > 0) {
+                    if (m < 50) {
+                        fpsLow++
+                        if (fpsLow >= 2) { fpsLow = 0; advanceLadder() }
+                    } else {
+                        fpsLow = 0
+                    }
+                }
+            }
+            main.postDelayed(this, 1000)
+        }
+    }
+
+    private fun advanceLadder() {
+        if (recording != null || mode != 3) return
+        if (ladderIdx + 1 < ladder.size) {
+            ladderIdx++
+            Toast.makeText(this, "৬০fps-এর জন্য স্টেবিলাইজেশনের অন্য কম্বিনেশন চেষ্টা হচ্ছে…", Toast.LENGTH_LONG).show()
+            bind()
+        } else if (fps60) {
+            if (videoQ == 2) {
+                videoQ = 0
+                ladderIdx = 0
+                Toast.makeText(this, "UHD-তে ৬০fps চলে না, FHD করা হলো", Toast.LENGTH_LONG).show()
+            } else {
+                fps60 = false
+                ladderIdx = 0
+                Toast.makeText(this, "এই ফোন ৬০fps দিচ্ছে না, ৩০fps করা হলো", Toast.LENGTH_LONG).show()
+            }
+            updateTop()
+            bind()
+        }
+    }
 
     @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun bindVideo(p: ProcessCameraProvider, base: CameraSelector): Boolean {
         return try {
             var fpsRange: Range<Int>? = null
-            var ois = false
-            var eis = false
+            var oisSup = false
+            val eisCand = ArrayList<Int>()
             val infos = base.filter(p.availableCameraInfos)
             if (infos.isNotEmpty()) {
                 val c2 = Camera2CameraInfo.from(infos[0])
                 val ranges = c2.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
                 if (ranges != null) fpsRange = ranges.filter { it.upper >= 60 }.maxByOrNull { it.lower }
                 val om = c2.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
-                ois = om?.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
+                oisSup = om?.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
                 val vm = c2.getCameraCharacteristic(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
-                eis = vm?.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON) == true
+                if (vm != null) {
+                    if (vm.contains(2)) eisCand.add(2)   // 2 = PREVIEW_STABILIZATION (নতুন EIS)
+                    if (vm.contains(1)) eisCand.add(1)   // 1 = ON (সাধারণ EIS)
+                }
             }
+            // চেষ্টার তালিকা: সেরা থেকে সাধারণ
+            val lad = ArrayList<Pair<Boolean, Int>>()
+            if (stabOn) {
+                for (e in eisCand) lad.add(Pair(oisSup, e))
+                if (oisSup) lad.add(Pair(true, 0))
+                if (oisSup) for (e in eisCand) lad.add(Pair(false, e))
+            }
+            lad.add(Pair(false, 0))
+            ladder = lad.distinct()
+            if (ladderIdx >= ladder.size) ladderIdx = ladder.size - 1
+            val useOis = ladder[ladderIdx].first
+            val eisMode = ladder[ladderIdx].second
+            activeStab = when {
+                useOis && eisMode != 0 -> "OIS+EIS"
+                useOis -> "OIS"
+                eisMode != 0 -> "EIS"
+                else -> "OFF"
+            }
+
             val qualities = when (videoQ) {
                 2 -> listOf(Quality.UHD, Quality.FHD, Quality.HD, Quality.SD)
                 1 -> listOf(Quality.HD, Quality.SD)
@@ -502,20 +598,40 @@ class MainActivity : AppCompatActivity() {
                 .setTargetVideoEncodingBitRate(bitrate)
                 .build()
             val vb = VideoCapture.Builder(recorder)
+            if (use60) vb.setTargetFrameRate(fpsRange!!)
             val ex = Camera2Interop.Extender(vb)
-            if (use60) {
-                ex.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange!!)
-            }
-            if (stabOn) {
-                if (ois) ex.setCaptureRequestOption(
-                    CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-                    CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
-                )
-                if (eis) ex.setCaptureRequestOption(
-                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                    CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
-                )
-            }
+            if (use60) ex.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange!!)
+            if (useOis) ex.setCaptureRequestOption(
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
+            )
+            if (eisMode != 0) ex.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, eisMode)
+            // আসল fps মাপা
+            fpsT0 = 0L
+            fpsCount = 0
+            measuredFps = 0f
+            fpsLow = 0
+            ex.setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult
+                ) {
+                    val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                    if (fpsT0 == 0L) {
+                        fpsT0 = ts
+                        fpsCount = 0
+                    } else {
+                        fpsCount++
+                        val dt = ts - fpsT0
+                        if (dt >= 1_000_000_000L) {
+                            measuredFps = fpsCount * 1_000_000_000f / dt
+                            fpsT0 = ts
+                            fpsCount = 0
+                        }
+                    }
+                }
+            })
             val vc = vb.build()
             videoCapture = vc
             val pv = Preview.Builder()
@@ -533,19 +649,16 @@ class MainActivity : AppCompatActivity() {
             val ld = cam.cameraInfo.cameraState
             stateLd = ld
             ld.observe(this) { st ->
-                if (st.error != null && mode == 3 && recording == null && !videoFallbackDone && (fps60 || stabOn)) {
-                    videoFallbackDone = true
-                    fps60 = false
-                    stabOn = false
-                    Toast.makeText(this, "এই ফোনে ৬০fps/স্টেবিলাইজেশন একসাথে চলছে না। ৩০fps-এ চালানো হচ্ছে", Toast.LENGTH_LONG).show()
-                    updateTop()
-                    main.post { bind() }
+                if (st.error != null && mode == 3 && recording == null) {
+                    main.post { advanceLadder() }
                 }
             }
+            updateTop()
             val info = "৬০fps: " + (if (fpsRange != null) "হ্যাঁ" else "না") +
-                ", OIS: " + (if (ois) "হ্যাঁ" else "না") +
-                ", EIS: " + (if (eis) "হ্যাঁ" else "না")
-            Toast.makeText(this, "ফোন সাপোর্ট — $info", Toast.LENGTH_LONG).show()
+                ", OIS: " + (if (oisSup) "হ্যাঁ" else "না") +
+                ", EIS: " + (if (eisCand.isNotEmpty()) "হ্যাঁ" else "না") +
+                " | এখন চালু: " + activeStab
+            Toast.makeText(this, info, Toast.LENGTH_LONG).show()
             true
         } catch (e: Throwable) {
             Toast.makeText(this, "ভিডিও চালু হয়নি: ${e.message}", Toast.LENGTH_LONG).show()
@@ -645,22 +758,28 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "ছবি তোলা যায়নি: $msg", Toast.LENGTH_LONG).show()
     }
 
-    private fun sceneIsDark(): Boolean {
+    // দৃশ্যের গড় আলো আর অন্ধকার/উজ্জ্বল অংশের শতাংশ
+    private fun sceneStats(): Triple<Int, Float, Float>? {
         return try {
-            val b = preview.bitmap ?: return false
+            val b = preview.bitmap ?: return null
             val sw = b.width
             val rh = min(b.height, sw * 4 / 3)
             var s = 0L
+            var dk = 0
+            var br = 0
             var n = 0
-            for (yy in 0 until 24) for (xx in 0 until 24) {
-                val p = b.getPixel(xx * sw / 24, yy * rh / 24)
-                s += ((((p shr 16) and 255) * 77) + (((p shr 8) and 255) * 150) + ((p and 255) * 29)) shr 8
+            for (yy in 0 until 32) for (xx in 0 until 32) {
+                val p = b.getPixel(xx * sw / 32, yy * rh / 32)
+                val l = ((((p shr 16) and 255) * 77) + (((p shr 8) and 255) * 150) + ((p and 255) * 29)) shr 8
+                s += l
+                if (l < 35) dk++
+                if (l > 225) br++
                 n++
             }
             b.recycle()
-            (s / n) < 70
+            Triple((s / n).toInt(), dk / n.toFloat(), br / n.toFloat())
         } catch (e: Throwable) {
-            false
+            null
         }
     }
 
@@ -681,11 +800,14 @@ class MainActivity : AppCompatActivity() {
         val maxIdx = if (exp.isExposureCompensationSupported && step > 0f) min(rng.upper, -rng.lower) else 0
         val twoEv = if (maxIdx > 0) min(maxIdx, Math.round(2f / step)) else 0
         val oneEv = if (maxIdx > 0) min(maxIdx, Math.round(1f / step)) else 0
-        val dark = !native && flash == ImageCapture.FLASH_MODE_OFF && mode != 0 && sceneIsDark()
+        val flashUsed = flash != ImageCapture.FLASH_MODE_OFF
+        val stats = if (!native && !flashUsed) sceneStats() else null
+        val dark = stats != null && mode != 0 && stats.first < 70
+        val hdrWanted = !native && hdrMode != 0 && mode != 0 &&
+            (hdrMode == 2 || (stats != null && stats.second + stats.third > 0.14f))
 
         var evs = listOf(0)
         var merge = 0
-        val flashUsed = flash != ImageCapture.FLASH_MODE_OFF
         if (!native && !flashUsed) {
             if (mode == 0) {
                 evs = List(6) { oneEv }
@@ -693,11 +815,14 @@ class MainActivity : AppCompatActivity() {
             } else if (dark) {
                 evs = List(4) { 0 }
                 merge = 1
-            } else if (hdrOn && twoEv >= 1) {
+            } else if (hdrWanted && twoEv >= 1) {
                 evs = listOf(0, -twoEv, twoEv)
                 merge = 2
             } else if (zoom > 1.3f) {
                 evs = List(4) { 0 }
+                merge = 1
+            } else if (nrOn) {
+                evs = List(3) { 0 }
                 merge = 1
             }
         }
@@ -707,7 +832,7 @@ class MainActivity : AppCompatActivity() {
             zoom = zoom,
             softZoom = soft,
             merge = merge,
-            hdrSingle = hdrOn && merge != 2 && !native && mode != 0,
+            hdrSingle = hdrWanted && merge != 2,
             night = mode == 0 && !native,
             portrait = mode == 2 && !native,
             blur = blurSeek.progress,

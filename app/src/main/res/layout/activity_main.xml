@@ -39,6 +39,7 @@
             <TextView android:id="@+id/tvFlash" style="@style/Top" />
             <TextView android:id="@+id/tvTimer" style="@style/Top" />
             <TextView android:id="@+id/tvHdr" style="@style/Top" />
+            <TextView android:id="@+id/tvNr" style="@style/Top" />
             <TextView android:id="@+id/tvGrid" style="@style/Top" />
             <TextView android:id="@+id/tvFilter" style="@style/Top" />
             <TextView android:id="@+id/tvRes" style="@style/Top" />
