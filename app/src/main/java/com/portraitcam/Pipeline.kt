@@ -40,6 +40,9 @@ class Params(
     val blur: Int,
     val beauty: Int,
     val filter: Int,
+    val ai: Int,
+    val bright: Int,
+    val nrBoost: Float,
     val dark: Boolean,
     val native: Boolean
 )
@@ -49,6 +52,8 @@ class Merged(val px: IntArray, val w: Int, val h: Int) {
 }
 
 object Pipeline {
+
+    @Volatile var note: String = ""
 
     private val segmenter by lazy {
         Segmentation.getClient(
@@ -103,7 +108,7 @@ object Pipeline {
         )
     }
 
-    fun run(shots: List<Shot>, p: Params, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
+    fun run(shots: List<Shot>, p: Params, sr: SuperRes?, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
         progress("ফ্রেম মেলানো হচ্ছে…")
         val first = shots[0]
         val dec0 = BitmapRegionDecoder.newInstance(first.jpeg, 0, first.jpeg.size, false)
@@ -127,22 +132,48 @@ object Pipeline {
         var si = 0
         while (si < m.px.size) { msum += lum(m.px[si]); mcnt++; si += 37 }
         val meanL = if (mcnt > 0) (msum / mcnt).toInt() else 120
-        var strength = 0.3f + max(0f, (110f - meanL) / 110f) * 0.6f + (z - 1f) * 0.1f - (shots.size - 1) * 0.04f
+        val kb = brighten(m.px, m.w, m.h, p.bright, meanL)
+        val up = if (p.softZoom) min(z, 5f) else 1f
+        val useAi = p.ai > 0 && sr != null && up > 1.01f
+        var strength = 0.3f + max(0f, (110f - meanL) / 110f) * 0.6f + (z - 1f) * 0.1f -
+            (shots.size - 1) * 0.04f + kb * 0.25f + p.nrBoost
         strength = strength.coerceIn(0.2f, 1f)
+        if (useAi) strength *= 0.6f
         if (p.native) strength = min(strength, 0.3f)
         progress("নয়েজ কমানো হচ্ছে…")
         denoise(m.px, m.w, m.h, strength)
         var px0 = m.px
         var mw = m.w
         var mh = m.h
-        val up = if (p.softZoom) min(z, 5f) else 1f
+        var aiDone = false
+        note = ""
         if (up > 1.01f) {
-            progress("ছবি বড় করা হচ্ছে…")
             val nw = max(2, (mw * up).toInt() and 1.inv())
             val nh = max(2, (mh * up).toInt() and 1.inv())
-            px0 = lanczos(px0, mw, mh, nw, nh)
-            mw = nw
-            mh = nh
+            if (useAi) {
+                val r = aiUpscale(px0, mw, mh, p.ai, sr!!, 90, progress)
+                if (r != null) {
+                    px0 = r.px
+                    if (abs(r.w - nw) > 8 || abs(r.h - nh) > 8) {
+                        progress("ছবির মাপ ঠিক করা হচ্ছে…")
+                        px0 = lanczos(px0, r.w, r.h, nw, nh)
+                        mw = nw
+                        mh = nh
+                    } else {
+                        mw = r.w
+                        mh = r.h
+                    }
+                    aiDone = true
+                }
+            }
+            if (!aiDone) {
+                progress("ছবি বড় করা হচ্ছে…")
+                px0 = lanczos(px0, mw, mh, nw, nh)
+                mw = nw
+                mh = nh
+            }
+        } else if (p.ai > 0) {
+            note = "AI আপস্কেল শুধু জুম (১.০৫x-এর বেশি) করলে চলে"
         }
         var bmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
         bmp.setPixels(px0, 0, mw, 0, 0, mw, mh)
@@ -164,7 +195,7 @@ object Pipeline {
         bmp.recycle()
         val hdrSingle2 = p.hdrSingle || (p.merge == 2 && !m.hdrOk)
         if (!p.native) tonemap(px, w, h, hdrSingle2, p.night)
-        val amt = if (p.native) 0.5f else (0.9f + 0.2f * (z - 1f)).coerceIn(0.9f, 1.7f)
+        val amt = if (p.native) 0.5f else if (aiDone) 0.45f else (0.9f + 0.2f * (z - 1f)).coerceIn(0.9f, 1.7f)
         sharpen(px, w, h, amt)
         var out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(px, 0, w, 0, 0, w, h)
@@ -930,6 +961,107 @@ object Pipeline {
     }
 
     // ---------- JPEG ব্লক কমানো, নয়েজ কমানো, ভালো আপস্কেল ----------
+
+    private class SrOut(val px: IntArray, val w: Int, val h: Int)
+
+    private fun aiUpscale(px: IntArray, w: Int, h: Int, mode: Int, sr: SuperRes, maxSec: Int, progress: (String) -> Unit): SrOut? {
+        var ipx = px
+        var iw = w
+        var ih = h
+        val maxPix = 1_000_000L
+        if (iw.toLong() * ih > maxPix) {
+            val sc = sqrt(maxPix.toDouble() / (iw.toLong() * ih))
+            val nw = max(16, (iw * sc).toInt())
+            val nh = max(16, (ih * sc).toInt())
+            progress("AI-এর জন্য ছবি ঠিক করা হচ্ছে…")
+            ipx = lanczos(ipx, iw, ih, nw, nh)
+            iw = nw
+            ih = nh
+        }
+        val model = if (mode == 2) "sr_hq.tflite" else "sr_fast.tflite"
+        val res = sr.upscale(ipx, iw, ih, model, maxSec) { d, t -> progress("AI আপস্কেল $d/$t") }
+        if (res == null) {
+            note = "AI আপস্কেল চলেনি বা খুব ধীর ছিল, সাধারণ আপস্কেল হয়েছে"
+            return null
+        }
+        note = "AI আপস্কেল হয়েছে (" + (if (sr.usingGpu) "GPU" else "CPU") + ")"
+        return SrOut(res, iw * 4, ih * 4)
+    }
+
+    // ছবি উজ্জ্বল করা (অন্ধকার ছবিতে বেশি)। রিটার্ন: কতটা উজ্জ্বল করা হলো (০-১)
+    private fun brighten(px: IntArray, w: Int, h: Int, amount: Int, meanL: Int): Float {
+        val auto = if (meanL < 105) (105 - meanL) / 105f * 0.5f else 0f
+        val k = (auto + amount / 100f * 0.5f).coerceIn(0f, 1f)
+        if (k < 0.02f) return 0f
+        val gamma = 1f / (1f + k * 0.9f)
+        val lut = IntArray(256) { (255f * (it / 255f).pow(gamma)).toInt().coerceIn(0, 255) }
+        for (i in px.indices) {
+            val p = px[i]
+            val r = (p shr 16) and 255
+            val g = (p shr 8) and 255
+            val b = p and 255
+            val y = (77 * r + 150 * g + 29 * b) shr 8
+            if (y < 1) continue
+            var f = (lut[y] + 0.5f) / (y + 0.5f)
+            if (f > 2.5f) f = 2.5f
+            val mx = max(r, max(g, b))
+            if (mx * f > 255f) f = 255f / mx
+            val nr = min(255, (r * f).toInt())
+            val ng = min(255, (g * f).toInt())
+            val nb = min(255, (b * f).toInt())
+            px[i] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+        }
+        return k
+    }
+
+    // গ্যালারির ছবি: নয়েজ কমানো + AI আপস্কেল + উজ্জ্বল + ডিটেইলস
+    fun enhance(src: Bitmap, ai: Int, bright: Int, nrBoost: Float, sr: SuperRes?, progress: (String) -> Unit): Bitmap {
+        note = ""
+        var w = src.width
+        var h = src.height
+        var px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        src.recycle()
+        var msum = 0L
+        var mcnt = 0
+        var si = 0
+        while (si < px.size) { msum += lum(px[si]); mcnt++; si += 37 }
+        val meanL = if (mcnt > 0) (msum / mcnt).toInt() else 120
+        val kb = brighten(px, w, h, bright, meanL)
+        progress("নয়েজ কমানো হচ্ছে…")
+        var strength = (0.5f + max(0f, (110f - meanL) / 110f) * 0.4f + kb * 0.25f + nrBoost).coerceIn(0.25f, 1f)
+        val wantAi = ai > 0 && sr != null
+        if (wantAi) strength *= 0.6f
+        denoise(px, w, h, strength)
+        var upscaled = false
+        if (wantAi) {
+            if (w.toLong() * h <= 1_300_000L) {
+                val r = aiUpscale(px, w, h, ai, sr!!, 150, progress)
+                if (r != null) {
+                    px = r.px
+                    w = r.w
+                    h = r.h
+                    upscaled = true
+                    if (w.toLong() * h > 16_000_000L) {
+                        val sc = sqrt(16_000_000.0 / (w.toLong() * h))
+                        val nw = max(2, (w * sc).toInt() and 1.inv())
+                        val nh = max(2, (h * sc).toInt() and 1.inv())
+                        px = lanczos(px, w, h, nw, nh)
+                        w = nw
+                        h = nh
+                    }
+                }
+            } else {
+                note = "ছবিটা বড় (১.৩ মেগাপিক্সেলের বেশি), তাই AI আপস্কেল বাদ। নয়েজ ও আলো ঠিক হয়েছে"
+            }
+        }
+        progress("রং ও ডিটেইলস ঠিক করা হচ্ছে…")
+        tonemap(px, w, h, true, false)
+        sharpen(px, w, h, if (upscaled) 0.45f else 1.0f)
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
 
     private fun smoothPix(l: Int, c: Int, r: Int): Int {
         val nr = ((((l shr 16) and 255) + 2 * ((c shr 16) and 255) + ((r shr 16) and 255)) shr 2)

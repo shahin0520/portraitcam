@@ -13,6 +13,22 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build AI upscale models
+        shell: bash
+        run: |
+          set -o pipefail
+          (
+            pip install tensorflow-cpu numpy
+            mkdir -p app/src/main/assets work
+            curl -sL -o work/general.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
+            curl -sL -o work/fast.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
+            python tools/convert.py work/general.pth 32 app/src/main/assets/sr_hq.tflite
+            python tools/convert.py work/fast.pth 16 app/src/main/assets/sr_fast.tflite
+            ls -la app/src/main/assets
+          ) 2>&1 | tee conv.log
       - name: Accept licenses
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v3
@@ -26,7 +42,7 @@ jobs:
         run: |
           git config user.name bot && git config user.email bot@x.y
           git checkout -b buildlog
-          grep -E "^e: |error:|What went wrong|Could not|FAILED|> " build.log | head -60 > errors.txt || true
+          (tail -n 30 conv.log; grep -E "^e: |error:|What went wrong|Could not|FAILED|> " build.log | head -60) > errors.txt || true
           git add -f errors.txt
           git commit -m "errors" && git push -f origin buildlog
       - uses: actions/upload-artifact@v4

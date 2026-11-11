@@ -40,6 +40,8 @@
             <TextView android:id="@+id/tvTimer" style="@style/Top" />
             <TextView android:id="@+id/tvHdr" style="@style/Top" />
             <TextView android:id="@+id/tvNr" style="@style/Top" />
+            <TextView android:id="@+id/tvAi" style="@style/Top" />
+            <TextView android:id="@+id/tvEnh" style="@style/Top" />
             <TextView android:id="@+id/tvGrid" style="@style/Top" />
             <TextView android:id="@+id/tvFilter" style="@style/Top" />
             <TextView android:id="@+id/tvRes" style="@style/Top" />
@@ -77,6 +79,26 @@
         android:gravity="center_horizontal"
         android:orientation="vertical"
         android:paddingBottom="24dp">
+
+        <LinearLayout
+            android:id="@+id/brightRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:text="Bright"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/brightSeek"
+                android:layout_width="220dp"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="40" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/beautyRow"

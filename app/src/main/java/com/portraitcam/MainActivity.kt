@@ -8,6 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.graphics.Color
 import android.hardware.camera2.CameraCaptureSession
 import android.graphics.ImageFormat
@@ -87,6 +90,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTimer: TextView
     private lateinit var tvHdr: TextView
     private lateinit var tvNr: TextView
+    private lateinit var tvAi: TextView
+    private lateinit var tvEnh: TextView
+    private lateinit var brightSeek: SeekBar
+    private lateinit var brightRow: View
     private lateinit var tvGrid: TextView
     private lateinit var tvFilter: TextView
     private lateinit var tvRes: TextView
@@ -120,7 +127,9 @@ class MainActivity : AppCompatActivity() {
     private var flash = ImageCapture.FLASH_MODE_OFF
     private var mode = 1            // 0 NIGHT, 1 PHOTO, 2 PORTRAIT, 3 VIDEO
     private var hdrMode = 1          // 0 OFF, 1 AUTO, 2 ON
-    private var nrOn = true
+    private var nrMode = 1           // 0 OFF, 1 ON, 2 MAX
+    private var aiMode = 2           // 0 OFF, 1 FAST, 2 HQ
+    private val sr by lazy { SuperRes(this) }
     private var ladder: List<Pair<Boolean, Int>> = listOf(Pair(false, 0))
     private var ladderIdx = 0
     private var activeStab = "OFF"
@@ -168,6 +177,10 @@ class MainActivity : AppCompatActivity() {
         tvTimer = findViewById(R.id.tvTimer)
         tvHdr = findViewById(R.id.tvHdr)
         tvNr = findViewById(R.id.tvNr)
+        tvAi = findViewById(R.id.tvAi)
+        tvEnh = findViewById(R.id.tvEnh)
+        brightSeek = findViewById(R.id.brightSeek)
+        brightRow = findViewById(R.id.brightRow)
         tvGrid = findViewById(R.id.tvGrid)
         tvFilter = findViewById(R.id.tvFilter)
         tvRes = findViewById(R.id.tvRes)
@@ -178,6 +191,8 @@ class MainActivity : AppCompatActivity() {
         tvInfo = findViewById(R.id.tvInfo)
         tvInfo.text = "DEPTH\nTEST"
         tvInfo.setOnClickListener { showCameraReport() }
+        tvInfo.visibility = View.GONE
+        tvVideo.visibility = View.GONE
         tvBusy = findViewById(R.id.tvBusy)
         tvCount = findViewById(R.id.tvCount)
         tvNight = findViewById(R.id.tvNight)
@@ -226,7 +241,9 @@ class MainActivity : AppCompatActivity() {
             updateTop()
         }
         tvHdr.setOnClickListener { hdrMode = (hdrMode + 1) % 3; updateTop(); bind() }
-        tvNr.setOnClickListener { nrOn = !nrOn; updateTop() }
+        tvNr.setOnClickListener { nrMode = (nrMode + 1) % 3; updateTop() }
+        tvAi.setOnClickListener { aiMode = (aiMode + 1) % 3; updateTop() }
+        tvEnh.setOnClickListener { if (!busy && recording == null) pickImage.launch("image/*") }
         tvGrid.setOnClickListener { gridOn = !gridOn; updateTop() }
         tvFilter.setOnClickListener { filterIdx = (filterIdx + 1) % filterNames.size; updateTop() }
         tvRes.setOnClickListener { resIdx = (resIdx + 1) % 3; updateTop(); bind() }
@@ -275,7 +292,7 @@ class MainActivity : AppCompatActivity() {
                     if (!multi && !sgd.isInProgress) {
                         val dx = e.x - downX
                         if (abs(dx) > 220f) {
-                            setMode((mode + (if (dx < 0) 1 else -1)).coerceIn(0, 3))
+                            setMode((mode + (if (dx < 0) 1 else -1)).coerceIn(0, 2))
                         } else if (e.eventTime - e.downTime < 250) {
                             val pt = preview.meteringPointFactory.createPoint(e.x, e.y)
                             camera?.cameraControl?.startFocusAndMetering(FocusMeteringAction.Builder(pt).build())
@@ -328,7 +345,8 @@ class MainActivity : AppCompatActivity() {
         blurRow.visibility = if (mode == 2 && !nativeMode) View.VISIBLE else View.GONE
         beautyRow.visibility = if (mode == 1 || mode == 2) View.VISIBLE else View.GONE
         val v = mode == 3
-        listOf(tvHdr, tvNr, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
+        listOf(tvHdr, tvNr, tvAi, tvEnh, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
+        brightRow.visibility = if (v) View.GONE else View.VISIBLE
         listOf(tvFps, tvStab, tvQual).forEach { it.visibility = if (v) View.VISIBLE else View.GONE }
         shutter.setBackgroundResource(
             if (v) (if (recording != null) R.drawable.shutter_stop else R.drawable.shutter_video)
@@ -347,7 +365,9 @@ class MainActivity : AppCompatActivity() {
         }
         tvTimer.text = "TIMER\n" + (if (timerSec == 0) "OFF" else "${timerSec}s")
         tvHdr.text = "HDR\n" + listOf("OFF", "AUTO", "ON")[hdrMode]
-        tvNr.text = "NR\n" + (if (nrOn) "ON" else "OFF")
+        tvNr.text = "NR\n" + listOf("OFF", "ON", "MAX")[nrMode]
+        tvAi.text = "AI ZOOM\n" + listOf("OFF", "FAST", "HQ")[aiMode]
+        tvEnh.text = "ENHANCE\nGALLERY"
         tvGrid.text = "GRID\n" + (if (gridOn) "ON" else "OFF")
         tvFilter.text = "FILTER\n" + filterNames[filterIdx]
         tvRes.text = "RES\n" + listOf("12MP", "16MP", "MAX")[resIdx]
@@ -358,7 +378,9 @@ class MainActivity : AppCompatActivity() {
         tint(tvFlash, flash != ImageCapture.FLASH_MODE_OFF)
         tint(tvTimer, timerSec != 0)
         tint(tvHdr, hdrMode != 0)
-        tint(tvNr, nrOn)
+        tint(tvNr, nrMode != 0)
+        tint(tvAi, aiMode != 0)
+        tint(tvEnh, false)
         tint(tvGrid, gridOn)
         tint(tvFilter, filterIdx != 0)
         tint(tvRes, resIdx == 2)
@@ -914,10 +936,10 @@ class MainActivity : AppCompatActivity() {
                 evs = listOf(0, -twoEv, twoEv)
                 merge = 2
             } else if (zoom > 1.3f) {
-                evs = List(4) { 0 }
+                evs = List(if (nrMode == 2) 6 else 4) { 0 }
                 merge = 1
-            } else if (nrOn) {
-                evs = List(3) { 0 }
+            } else if (nrMode >= 1) {
+                evs = List(if (nrMode == 2) 5 else 3) { 0 }
                 merge = 1
             }
         }
@@ -933,6 +955,9 @@ class MainActivity : AppCompatActivity() {
             blur = blurSeek.progress,
             beauty = if (mode == 0) 0 else beautySeek.progress,
             filter = filterIdx,
+            ai = aiMode,
+            bright = brightSeek.progress,
+            nrBoost = when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f },
             dark = dark,
             native = native
         )
@@ -1001,7 +1026,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun runProcess(shots: List<Shot>, p: Params) {
         try {
-            val (bmp, noPerson) = Pipeline.run(shots, p) { msg -> runOnUiThread { setBusy(msg) } }
+            val (bmp, noPerson) = Pipeline.run(shots, p, sr) { msg -> runOnUiThread { setBusy(msg) } }
             val uri = save(bmp)
             val th = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
             bmp.recycle()
@@ -1010,8 +1035,9 @@ class MainActivity : AppCompatActivity() {
                 gallery.setImageBitmap(th)
                 Toast.makeText(
                     this,
-                    if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ ছবি সেভ হয়েছে" else "ছবি সেভ হয়েছে",
-                    Toast.LENGTH_SHORT
+                    (if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ ছবি সেভ হয়েছে" else "ছবি সেভ হয়েছে") +
+                        (if (Pipeline.note.isNotEmpty()) "\n" + Pipeline.note else ""),
+                    Toast.LENGTH_LONG
                 ).show()
             }
         } catch (e: Throwable) {
@@ -1023,8 +1049,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun save(bmp: Bitmap): Uri {
-        val name = "IMG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
+    // ---------- গ্যালারির ছবি ভালো করা (AI আপস্কেল + নয়েজ + উজ্জ্বল) ----------
+
+    private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) enhanceUri(uri)
+    }
+
+    private fun decodeUri(uri: Uri): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (max(bounds.outWidth, bounds.outHeight) / sample > 4096) sample *= 2
+        val o = BitmapFactory.Options().apply { inSampleSize = sample }
+        var bmp = contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, o) }
+            ?: throw IllegalStateException("ছবি পড়া যায়নি")
+        val orient = try {
+            contentResolver.openInputStream(uri)!!.use {
+                ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            }
+        } catch (e: Throwable) { ExifInterface.ORIENTATION_NORMAL }
+        val deg = when (orient) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+        if (deg != 0f) {
+            val m = Matrix().apply { postRotate(deg) }
+            val r = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+            if (r !== bmp) bmp.recycle()
+            bmp = r
+        }
+        return bmp
+    }
+
+    private fun enhanceUri(uri: Uri) {
+        if (busy) return
+        busy = true
+        setBusy("ছবি পড়া হচ্ছে…")
+        val ai = aiMode
+        val bright = brightSeek.progress
+        val boost = when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f }
+        io.execute {
+            try {
+                val src = decodeUri(uri)
+                val inW = src.width
+                val inH = src.height
+                val out = Pipeline.enhance(src, ai, bright, boost, sr) { msg -> runOnUiThread { setBusy(msg) } }
+                val saved = save(out, "ENH_")
+                val th = Bitmap.createScaledBitmap(out, 160, max(1, 160 * out.height / out.width), true)
+                val note = Pipeline.note
+                val info = "${inW}x${inH} → ${out.width}x${out.height}"
+                out.recycle()
+                runOnUiThread {
+                    lastUri = saved
+                    gallery.setImageBitmap(th)
+                    Toast.makeText(this, "ভালো করা ছবি সেভ হয়েছে ($info)" + (if (note.isNotEmpty()) "\n$note" else ""), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                val msg = if (e is OutOfMemoryError) "মেমোরি কম" else (e.message ?: "অজানা এরর")
+                runOnUiThread { Toast.makeText(this, "এরর: $msg", Toast.LENGTH_LONG).show() }
+            } finally {
+                busy = false
+                runOnUiThread { setBusy(null) }
+            }
+        }
+    }
+
+    private fun save(bmp: Bitmap, prefix: String = "IMG_"): Uri {
+        val name = prefix + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
         val v = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, name)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
