@@ -148,7 +148,12 @@ class MainActivity : AppCompatActivity() {
     private var videoQ = 0
     private var busy = false
     private var lastUri: Uri? = null
-    private val io = Executors.newSingleThreadExecutor()
+    private val io = Executors.newSingleThreadExecutor()          // ক্যামেরার ছবি তোলা
+    private val procExec = Executors.newSingleThreadExecutor()    // ব্যাকগ্রাউন্ডে ছবি প্রসেস
+    private val miscExec = Executors.newSingleThreadExecutor()
+    private val jobsPending = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var jobStatus = ""
+    private lateinit var tvJobs: TextView
     private val main = Handler(Looper.getMainLooper())
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -167,6 +172,27 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            initUi()
+        } catch (e: Throwable) {
+            showFatal(e)
+        }
+    }
+
+    private fun showFatal(e: Throwable) {
+        val tv = TextView(this)
+        tv.setTextColor(Color.WHITE)
+        tv.textSize = 12f
+        tv.setPadding(24, 64, 24, 24)
+        tv.setTextIsSelectable(true)
+        tv.text = "অ্যাপ চালু করতে সমস্যা হয়েছে। এই লেখার স্ক্রিনশট পাঠাও:\n\n" + android.util.Log.getStackTraceString(e)
+        val sc = android.widget.ScrollView(this)
+        sc.setBackgroundColor(Color.BLACK)
+        sc.addView(tv)
+        setContentView(sc)
+    }
+
+    private fun initUi() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
         preview = findViewById(R.id.preview)
@@ -192,13 +218,14 @@ class MainActivity : AppCompatActivity() {
         tvInfo.text = "DEPTH\nTEST"
         tvInfo.setOnClickListener { showCameraReport() }
         tvInfo.visibility = View.GONE
-        tvVideo.visibility = View.GONE
         tvBusy = findViewById(R.id.tvBusy)
         tvCount = findViewById(R.id.tvCount)
         tvNight = findViewById(R.id.tvNight)
         tvPhoto = findViewById(R.id.tvPhoto)
         tvPortrait = findViewById(R.id.tvPortrait)
         tvVideo = findViewById(R.id.tvVideo)
+        tvVideo.visibility = View.GONE
+        tvJobs = findViewById(R.id.tvJobs)
         gallery = findViewById(R.id.gallery)
         blurSeek = findViewById(R.id.blurSeek)
         beautySeek = findViewById(R.id.beautySeek)
@@ -243,7 +270,7 @@ class MainActivity : AppCompatActivity() {
         tvHdr.setOnClickListener { hdrMode = (hdrMode + 1) % 3; updateTop(); bind() }
         tvNr.setOnClickListener { nrMode = (nrMode + 1) % 3; updateTop() }
         tvAi.setOnClickListener { aiMode = (aiMode + 1) % 3; updateTop() }
-        tvEnh.setOnClickListener { if (!busy && recording == null) pickImage.launch("image/*") }
+        tvEnh.setOnClickListener { if (recording == null) pickImage.launch("image/*") }
         tvGrid.setOnClickListener { gridOn = !gridOn; updateTop() }
         tvFilter.setOnClickListener { filterIdx = (filterIdx + 1) % filterNames.size; updateTop() }
         tvRes.setOnClickListener { resIdx = (resIdx + 1) % 3; updateTop(); bind() }
@@ -307,7 +334,7 @@ class MainActivity : AppCompatActivity() {
         updateTop()
         updateModeUi()
         main.postDelayed(fpsTick, 1000)
-        io.execute { Pipeline.warmUp() }
+        miscExec.execute { Pipeline.warmUp() }
         if (cameraGranted()) {
             startCamera()
             if (!audioGranted()) permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
@@ -539,7 +566,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCameraReport() {
         setBusy("ফোনের ক্যামেরা পরীক্ষা হচ্ছে…")
-        io.execute {
+        miscExec.execute {
             val text = try { buildCameraReport() } catch (e: Throwable) { "Error: ${e.message}" }
             runOnUiThread {
                 setBusy(null)
@@ -840,6 +867,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun onShutter() {
         if (busy) return
+        if (mode != 3 && jobsPending.get() >= 3) {
+            Toast.makeText(this, "আগের ছবিগুলো প্রসেস হচ্ছে, একটু অপেক্ষা করো", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (mode == 3) {
             if (recording != null || timerSec == 0) {
                 toggleRecord()
@@ -983,8 +1014,9 @@ class MainActivity : AppCompatActivity() {
         fun next(i: Int) {
             if (i >= evs.size) {
                 restore()
-                setBusy("প্রসেস হচ্ছে…")
-                io.execute { runProcess(shots, params) }
+                setBusy(null)
+                busy = false
+                submitJob(shots, params)
                 return
             }
             val setEv = try { cam.cameraControl.setExposureCompensationIndex(evs[i]) } catch (e: Throwable) { null }
@@ -1024,19 +1056,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateJobsUi() {
+        val n = jobsPending.get()
+        if (n <= 0) {
+            tvJobs.visibility = View.GONE
+        } else {
+            tvJobs.text = "⏳ প্রসেস চলছে ($n)" + (if (jobStatus.isNotEmpty()) "\n$jobStatus" else "")
+            tvJobs.visibility = View.VISIBLE
+        }
+    }
+
+    private fun submitJob(shots: List<Shot>, p: Params) {
+        jobsPending.incrementAndGet()
+        updateJobsUi()
+        procExec.execute { runProcess(shots, p) }
+    }
+
     private fun runProcess(shots: List<Shot>, p: Params) {
         try {
-            val (bmp, noPerson) = Pipeline.run(shots, p, sr) { msg -> runOnUiThread { setBusy(msg) } }
+            val (bmp, noPerson) = Pipeline.run(shots, p, sr) { msg ->
+                jobStatus = msg
+                runOnUiThread { updateJobsUi() }
+            }
             val uri = save(bmp)
             val th = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
             bmp.recycle()
+            val note = Pipeline.note
             runOnUiThread {
                 lastUri = uri
                 gallery.setImageBitmap(th)
                 Toast.makeText(
                     this,
                     (if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ ছবি সেভ হয়েছে" else "ছবি সেভ হয়েছে") +
-                        (if (Pipeline.note.isNotEmpty()) "\n" + Pipeline.note else ""),
+                        (if (note.isNotEmpty()) "\n" + note else ""),
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -1044,8 +1096,9 @@ class MainActivity : AppCompatActivity() {
             val msg = if (e is OutOfMemoryError) "মেমোরি কম। RES-কে 12MP করো" else (e.message ?: "অজানা এরর")
             runOnUiThread { Toast.makeText(this, "এরর: $msg", Toast.LENGTH_LONG).show() }
         } finally {
-            busy = false
-            runOnUiThread { setBusy(null) }
+            jobsPending.decrementAndGet()
+            jobStatus = ""
+            runOnUiThread { updateJobsUi() }
         }
     }
 
@@ -1084,18 +1137,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun enhanceUri(uri: Uri) {
-        if (busy) return
-        busy = true
-        setBusy("ছবি পড়া হচ্ছে…")
+        if (jobsPending.get() >= 3) {
+            Toast.makeText(this, "আগের ছবিগুলো প্রসেস হচ্ছে, একটু অপেক্ষা করো", Toast.LENGTH_SHORT).show()
+            return
+        }
+        jobsPending.incrementAndGet()
+        jobStatus = "ছবি পড়া হচ্ছে…"
+        updateJobsUi()
         val ai = aiMode
         val bright = brightSeek.progress
         val boost = when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f }
-        io.execute {
+        procExec.execute {
             try {
                 val src = decodeUri(uri)
                 val inW = src.width
                 val inH = src.height
-                val out = Pipeline.enhance(src, ai, bright, boost, sr) { msg -> runOnUiThread { setBusy(msg) } }
+                val out = Pipeline.enhance(src, ai, bright, boost, sr) { msg ->
+                    jobStatus = msg
+                    runOnUiThread { updateJobsUi() }
+                }
                 val saved = save(out, "ENH_")
                 val th = Bitmap.createScaledBitmap(out, 160, max(1, 160 * out.height / out.width), true)
                 val note = Pipeline.note
@@ -1110,8 +1170,9 @@ class MainActivity : AppCompatActivity() {
                 val msg = if (e is OutOfMemoryError) "মেমোরি কম" else (e.message ?: "অজানা এরর")
                 runOnUiThread { Toast.makeText(this, "এরর: $msg", Toast.LENGTH_LONG).show() }
             } finally {
-                busy = false
-                runOnUiThread { setBusy(null) }
+                jobsPending.decrementAndGet()
+                jobStatus = ""
+                runOnUiThread { updateJobsUi() }
             }
         }
     }
