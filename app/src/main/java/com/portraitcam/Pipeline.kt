@@ -204,9 +204,9 @@ object Pipeline {
         if (!p.native) tonemap(px, w, h, hdrSingle2, p.night)
         val dk = p.detail / 100f
         val core = (0.8f * sigma + 2f).toInt().coerceIn(2, 10)
-        var amt = if (p.native) 0.6f else 0.6f + dk * 1.2f
+        var amt = if (p.native) 0.5f else 0.4f + dk * 0.8f
         amt = if (aiDone) amt * 0.5f else amt * (1f + 0.08f * (z - 1f)).coerceAtMost(1.3f)
-        val ck = if (p.native) dk * 0.2f else dk * 0.5f * (if (aiDone) 0.6f else 1f)
+        val ck = if (p.native) dk * 0.15f else dk * 0.3f * (if (aiDone) 0.6f else 1f)
         progress("ডিটেইলস বাড়ানো হচ্ছে…")
         clarity(px, w, h, ck)
         sharpen2(px, w, h, amt, core)
@@ -491,7 +491,7 @@ object Pipeline {
         val lut = IntArray(256) { i ->
             val t = i / 255f
             val s = t * t * (3f - 2f * t)
-            ((t * 0.78f + s * 0.22f) * 1.04f * 255f).toInt().coerceIn(0, 255)
+            ((t * 0.8f + s * 0.2f) * 255f).toInt().coerceIn(0, 255)
         }
         val bil = Bil(w, h, gw, gh)
         for (y in 0 until h) {
@@ -577,7 +577,7 @@ object Pipeline {
             for (v in conf) sum += v
             if (sum / (mw * mh) < 0.02f) return null
 
-            val gs = 1024f / max(src.width, src.height)
+            val gs = 1536f / max(src.width, src.height)
             val gw = max(16, (src.width * gs).toInt())
             val gh = max(16, (src.height * gs).toInt())
             val pArr = FloatArray(gw * gh)
@@ -1005,7 +1005,7 @@ object Pipeline {
 
     // ছবি উজ্জ্বল করা (অন্ধকার ছবিতে বেশি)। রিটার্ন: কতটা উজ্জ্বল করা হলো (০-১)
     private fun brighten(px: IntArray, w: Int, h: Int, amount: Int, meanL: Int): Float {
-        val auto = if (meanL < 105) (105 - meanL) / 105f * 0.5f else 0f
+        val auto = if (meanL < 95) (95 - meanL) / 95f * 0.4f else 0f
         val k = (auto + amount / 100f * 0.5f).coerceIn(0f, 1f)
         if (k < 0.02f) return 0f
         val gamma = 1f / (1f + k * 0.9f)
@@ -1073,8 +1073,8 @@ object Pipeline {
         progress("রং ও ডিটেইলস ঠিক করা হচ্ছে…")
         tonemap(px, w, h, true, false)
         val dk = detail / 100f
-        clarity(px, w, h, dk * 0.5f * (if (upscaled) 0.6f else 1f))
-        sharpen2(px, w, h, (0.6f + dk * 1.2f) * (if (upscaled) 0.5f else 1f), (0.8f * sigma + 2f).toInt().coerceIn(2, 10))
+        clarity(px, w, h, dk * 0.3f * (if (upscaled) 0.6f else 1f))
+        sharpen2(px, w, h, (0.4f + dk * 0.8f) * (if (upscaled) 0.5f else 1f), (0.8f * sigma + 2f).toInt().coerceIn(2, 10))
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(px, 0, w, 0, 0, w, h)
         return out
@@ -1170,7 +1170,7 @@ object Pipeline {
         if (w < 16 || h < 16) return
         val s = sigma.coerceIn(0.6f, 14f)
         chromaDenoise(px, w, h, s)
-        lumaDenoise(px, w, h, s)
+        if (s >= 1.8f) lumaDenoise(px, w, h, s)
         if (s > 6f) lumaDenoise(px, w, h, s * 0.8f)
     }
 
@@ -1194,7 +1194,7 @@ object Pipeline {
         val rc = (1 + (s / 2f).toInt()).coerceIn(2, 6)
         blurGray(cb, cw, ch, rc, 2)
         blurGray(cr, cw, ch, rc, 2)
-        val wFlat = ((0.55f + 0.4f * min(s / 10f, 1f)) * 256f).toInt()
+        val wFlat = ((0.35f + 0.55f * min(s / 10f, 1f)) * 256f).toInt()
         val wEdge = (0.3f * 256f).toInt()
         for (y in 0 until h) {
             val cy = min(y / 2, ch - 1)
@@ -1219,7 +1219,7 @@ object Pipeline {
     }
 
     private fun lumaDenoise(px: IntArray, w: Int, h: Int, s: Float) {
-        val thr = (2f * s + 2f).toInt().coerceIn(3, 24)
+        val thr = (1.6f * s + 1.5f).toInt().coerceIn(3, 22)
         var prevY = IntArray(w)
         var curY = IntArray(w)
         var nextY = IntArray(w)
@@ -1276,7 +1276,7 @@ object Pipeline {
                 val g = (p shr 8) and 255
                 val b = p and 255
                 val yy = (77 * r + 150 * g + 29 * b) shr 8
-                val d = ((yy - bil.at(grid, x)) * k).toInt().coerceIn(-28, 28)
+                val d = ((yy - bil.at(grid, x)) * k).toInt().coerceIn(-14, 14)
                 if (d != 0) {
                     px[row + x] = (0xFF shl 24) or ((r + d).coerceIn(0, 255) shl 16) or
                         ((g + d).coerceIn(0, 255) shl 8) or (b + d).coerceIn(0, 255)
@@ -1326,7 +1326,7 @@ object Pipeline {
         val d = v - avg
         val ad = abs(d)
         if (ad <= core) return v
-        val dd = min(((ad - core) * k) shr 9, 40)
+        val dd = min(((ad - core) * k) shr 9, 24)
         return (if (d > 0) v + dd else v - dd).coerceIn(0, 255)
     }
 

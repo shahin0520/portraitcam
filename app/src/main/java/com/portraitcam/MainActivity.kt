@@ -543,8 +543,8 @@ class MainActivity : AppCompatActivity() {
                             ResolutionStrategy(target, ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
                         ).build()
                 )
-                // ক্যামেরার নিজের সেরা মানের নয়েজ রিডাকশন
-                try {
+                // ক্যামেরার নিজের ডিফল্ট নয়েজ রিডাকশন রাখা হলো (ডিটেইল বাঁচাতে)
+                if (false) try {
                     val infos = sel.filter(p.availableCameraInfos)
                     if (infos.isNotEmpty()) {
                         val c2 = Camera2CameraInfo.from(infos[0])
@@ -976,7 +976,7 @@ class MainActivity : AppCompatActivity() {
             } else if (zoom > 1.3f) {
                 evs = List(if (nrMode == 2) 6 else 4) { 0 }
                 merge = 1
-            } else if (nrMode >= 1) {
+            } else if (nrMode == 2 || (nrMode == 1 && !(stats != null && stats.first >= 110))) {
                 evs = List(if (nrMode == 2) 5 else 3) { 0 }
                 merge = 1
             }
