@@ -94,6 +94,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvEnh: TextView
     private lateinit var brightSeek: SeekBar
     private lateinit var brightRow: View
+    private lateinit var detailSeek: SeekBar
+    private lateinit var detailRow: View
     private lateinit var tvGrid: TextView
     private lateinit var tvFilter: TextView
     private lateinit var tvRes: TextView
@@ -207,6 +209,8 @@ class MainActivity : AppCompatActivity() {
         tvEnh = findViewById(R.id.tvEnh)
         brightSeek = findViewById(R.id.brightSeek)
         brightRow = findViewById(R.id.brightRow)
+        detailSeek = findViewById(R.id.detailSeek)
+        detailRow = findViewById(R.id.detailRow)
         tvGrid = findViewById(R.id.tvGrid)
         tvFilter = findViewById(R.id.tvFilter)
         tvRes = findViewById(R.id.tvRes)
@@ -268,7 +272,7 @@ class MainActivity : AppCompatActivity() {
             updateTop()
         }
         tvHdr.setOnClickListener { hdrMode = (hdrMode + 1) % 3; updateTop(); bind() }
-        tvNr.setOnClickListener { nrMode = (nrMode + 1) % 3; updateTop() }
+        tvNr.setOnClickListener { nrMode = (nrMode + 1) % 3; updateTop(); bind() }
         tvAi.setOnClickListener { aiMode = (aiMode + 1) % 3; updateTop() }
         tvEnh.setOnClickListener { if (recording == null) pickImage.launch("image/*") }
         tvGrid.setOnClickListener { gridOn = !gridOn; updateTop() }
@@ -374,6 +378,7 @@ class MainActivity : AppCompatActivity() {
         val v = mode == 3
         listOf(tvHdr, tvNr, tvAi, tvEnh, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
         brightRow.visibility = if (v) View.GONE else View.VISIBLE
+        detailRow.visibility = if (v) View.GONE else View.VISIBLE
         listOf(tvFps, tvStab, tvQual).forEach { it.visibility = if (v) View.VISIBLE else View.GONE }
         shutter.setBackgroundResource(
             if (v) (if (recording != null) R.drawable.shutter_stop else R.drawable.shutter_video)
@@ -544,11 +549,13 @@ class MainActivity : AppCompatActivity() {
                     if (infos.isNotEmpty()) {
                         val c2 = Camera2CameraInfo.from(infos[0])
                         val nm = c2.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
-                        if (nm != null && nm.contains(CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY)) {
-                            Camera2Interop.Extender(b).setCaptureRequestOption(
-                                CaptureRequest.NOISE_REDUCTION_MODE,
-                                CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
-                            )
+                        val wantNr = if (nrMode == 0) CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
+                        else CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL
+                        val useNr = if (nm != null && nm.contains(wantNr)) wantNr
+                        else if (nm != null && nm.contains(CameraMetadata.NOISE_REDUCTION_MODE_FAST)) CameraMetadata.NOISE_REDUCTION_MODE_FAST
+                        else -1
+                        if (useNr >= 0) {
+                            Camera2Interop.Extender(b).setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, useNr)
                         }
                     }
                 } catch (e: Throwable) { }
@@ -988,6 +995,7 @@ class MainActivity : AppCompatActivity() {
             filter = filterIdx,
             ai = aiMode,
             bright = brightSeek.progress,
+            detail = detailSeek.progress,
             nrBoost = when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f },
             dark = dark,
             native = native
@@ -1146,13 +1154,14 @@ class MainActivity : AppCompatActivity() {
         updateJobsUi()
         val ai = aiMode
         val bright = brightSeek.progress
+        val detail = detailSeek.progress
         val boost = when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f }
         procExec.execute {
             try {
                 val src = decodeUri(uri)
                 val inW = src.width
                 val inH = src.height
-                val out = Pipeline.enhance(src, ai, bright, boost, sr) { msg ->
+                val out = Pipeline.enhance(src, ai, bright, detail, boost, sr) { msg ->
                     jobStatus = msg
                     runOnUiThread { updateJobsUi() }
                 }

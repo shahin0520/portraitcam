@@ -42,6 +42,7 @@ class Params(
     val filter: Int,
     val ai: Int,
     val bright: Int,
+    val detail: Int,
     val nrBoost: Float,
     val dark: Boolean,
     val native: Boolean
@@ -110,7 +111,14 @@ object Pipeline {
 
     fun run(shots: List<Shot>, p: Params, sr: SuperRes?, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
         progress("ফ্রেম মেলানো হচ্ছে…")
-        val first = shots[0]
+        // সবচেয়ে ধারালো ফ্রেম (বড় JPEG) আগে, ঝাপসা ফ্রেম বাদ
+        var shotsX = shots
+        if (p.merge == 1 && shots.size >= 3) {
+            val ordered = shots.sortedByDescending { it.jpeg.size }
+            val keep = ordered.filter { it.jpeg.size >= ordered[0].jpeg.size * 0.85 }
+            shotsX = if (keep.size >= 2) keep else ordered.take(2)
+        }
+        val first = shotsX[0]
         val dec0 = BitmapRegionDecoder.newInstance(first.jpeg, 0, first.jpeg.size, false)
         val sw0 = dec0.width
         val sh0 = dec0.height
@@ -125,7 +133,7 @@ object Pipeline {
         while ((cw / sample).toLong() * (ch / sample) > 16_000_000L) sample *= 2
 
         val ghost = if (p.dark) 160 else 100
-        val m = merge(shots, rect, sample, p.merge, ghost)
+        val m = merge(shotsX, rect, sample, p.merge, ghost)
         if (sample == 1) deblock(m.px, m.w, m.h, rect.left, rect.top)
         var msum = 0L
         var mcnt = 0
@@ -135,13 +143,12 @@ object Pipeline {
         val kb = brighten(m.px, m.w, m.h, p.bright, meanL)
         val up = if (p.softZoom) min(z, 5f) else 1f
         val useAi = p.ai > 0 && sr != null && up > 1.01f
-        var strength = 0.3f + max(0f, (110f - meanL) / 110f) * 0.6f + (z - 1f) * 0.1f -
-            (shots.size - 1) * 0.04f + kb * 0.25f + p.nrBoost
-        strength = strength.coerceIn(0.2f, 1f)
-        if (useAi) strength *= 0.6f
-        if (p.native) strength = min(strength, 0.3f)
+        val sigma0 = estimateSigma(m.px, m.w, m.h)
+        var sigma = sigma0 * (1f + p.nrBoost * 2f).coerceIn(0.5f, 1.8f)
+        if (useAi) sigma *= 0.6f
+        if (p.native) sigma = min(sigma, 3f)
         progress("নয়েজ কমানো হচ্ছে…")
-        denoise(m.px, m.w, m.h, strength)
+        denoise(m.px, m.w, m.h, sigma)
         var px0 = m.px
         var mw = m.w
         var mh = m.h
@@ -195,8 +202,14 @@ object Pipeline {
         bmp.recycle()
         val hdrSingle2 = p.hdrSingle || (p.merge == 2 && !m.hdrOk)
         if (!p.native) tonemap(px, w, h, hdrSingle2, p.night)
-        val amt = if (p.native) 0.5f else if (aiDone) 0.45f else (0.9f + 0.2f * (z - 1f)).coerceIn(0.9f, 1.7f)
-        sharpen(px, w, h, amt)
+        val dk = p.detail / 100f
+        val core = (0.8f * sigma + 2f).toInt().coerceIn(2, 10)
+        var amt = if (p.native) 0.6f else 0.6f + dk * 1.2f
+        amt = if (aiDone) amt * 0.5f else amt * (1f + 0.08f * (z - 1f)).coerceAtMost(1.3f)
+        val ck = if (p.native) dk * 0.2f else dk * 0.5f * (if (aiDone) 0.6f else 1f)
+        progress("ডিটেইলস বাড়ানো হচ্ছে…")
+        clarity(px, w, h, ck)
+        sharpen2(px, w, h, amt, core)
         var out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(px, 0, w, 0, 0, w, h)
         px = IntArray(0)
@@ -420,11 +433,13 @@ object Pipeline {
                         val r1 = (p shr 16) and 255
                         val g1 = (p shr 8) and 255
                         val b1 = p and 255
-                        if (abs(r1 - r0) + abs(g1 - g0) + abs(b1 - b0) > ghost) continue
-                        val n = count
-                        val nr = (r0 * n + r1 + (n + 1) / 2) / (n + 1)
-                        val ng = (g0 * n + g1 + (n + 1) / 2) / (n + 1)
-                        val nb = (b0 * n + b1 + (n + 1) / 2) / (n + 1)
+                        val dd = abs(r1 - r0) + abs(g1 - g0) + abs(b1 - b0)
+                        if (dd >= ghost) continue
+                        val wgt = if (dd * 5 < ghost * 2) 1f else (ghost - dd) / (ghost * 0.6f)
+                        val t = wgt / (count + wgt)
+                        val nr = (r0 + (r1 - r0) * t + 0.5f).toInt().coerceIn(0, 255)
+                        val ng = (g0 + (g1 - g0) * t + 0.5f).toInt().coerceIn(0, 255)
+                        val nb = (b0 + (b1 - b0) * t + 0.5f).toInt().coerceIn(0, 255)
                         out[ro + x] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
                     }
                 }
@@ -1015,7 +1030,7 @@ object Pipeline {
     }
 
     // গ্যালারির ছবি: নয়েজ কমানো + AI আপস্কেল + উজ্জ্বল + ডিটেইলস
-    fun enhance(src: Bitmap, ai: Int, bright: Int, nrBoost: Float, sr: SuperRes?, progress: (String) -> Unit): Bitmap {
+    fun enhance(src: Bitmap, ai: Int, bright: Int, detail: Int, nrBoost: Float, sr: SuperRes?, progress: (String) -> Unit): Bitmap {
         note = ""
         var w = src.width
         var h = src.height
@@ -1029,10 +1044,10 @@ object Pipeline {
         val meanL = if (mcnt > 0) (msum / mcnt).toInt() else 120
         val kb = brighten(px, w, h, bright, meanL)
         progress("নয়েজ কমানো হচ্ছে…")
-        var strength = (0.5f + max(0f, (110f - meanL) / 110f) * 0.4f + kb * 0.25f + nrBoost).coerceIn(0.25f, 1f)
         val wantAi = ai > 0 && sr != null
-        if (wantAi) strength *= 0.6f
-        denoise(px, w, h, strength)
+        var sigma = max(estimateSigma(px, w, h), 1.5f) * (1f + nrBoost * 2f).coerceIn(0.5f, 1.8f)
+        if (wantAi) sigma *= 0.6f
+        denoise(px, w, h, sigma)
         var upscaled = false
         if (wantAi) {
             if (w.toLong() * h <= 1_300_000L) {
@@ -1057,7 +1072,9 @@ object Pipeline {
         }
         progress("রং ও ডিটেইলস ঠিক করা হচ্ছে…")
         tonemap(px, w, h, true, false)
-        sharpen(px, w, h, if (upscaled) 0.45f else 1.0f)
+        val dk = detail / 100f
+        clarity(px, w, h, dk * 0.5f * (if (upscaled) 0.6f else 1f))
+        sharpen2(px, w, h, (0.6f + dk * 1.2f) * (if (upscaled) 0.5f else 1f), (0.8f * sigma + 2f).toInt().coerceIn(2, 10))
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(px, 0, w, 0, 0, w, h)
         return out
@@ -1128,15 +1145,36 @@ object Pipeline {
         }
     }
 
-    // রং-নয়েজ (দানা) কমানো + ডিটেইলস না নষ্ট করে ব্রাইটনেস-নয়েজ কমানো
-    private fun denoise(px: IntArray, w: Int, h: Int, strength: Float) {
-        if (strength <= 0.05f || w < 16 || h < 16) return
-        chromaDenoise(px, w, h, strength)
-        lumaDenoise(px, w, h, strength)
-        if (strength > 0.6f) lumaDenoise(px, w, h, strength * 0.8f)
+    // ছবির আসল নয়েজ কতটা তা মাপা (ব্রাইটনেস নয়েজের σ)। এর ওপর ভিত্তি করেই নয়েজ কমানো হয়
+    private fun estimateSigma(px: IntArray, w: Int, h: Int): Float {
+        if (w < 32 || h < 32) return 2f
+        val n = 20000
+        val vals = IntArray(n)
+        var seed = 12345L
+        for (i in 0 until n) {
+            seed = seed * 6364136223846793005L + 1442695040888963407L
+            val rx = ((seed ushr 33) % (w - 4).toLong()).toInt() + 2
+            seed = seed * 6364136223846793005L + 1442695040888963407L
+            val ry = ((seed ushr 33) % (h - 4).toLong()).toInt() + 2
+            val c = lum(px[ry * w + rx])
+            val sum = lum(px[ry * w + rx - 1]) + lum(px[ry * w + rx + 1]) +
+                lum(px[(ry - 1) * w + rx]) + lum(px[(ry + 1) * w + rx])
+            vals[i] = abs(4 * c - sum)
+        }
+        vals.sort()
+        val p25 = vals[n / 4] / 4f
+        return (p25 * 2.8f).coerceIn(0.6f, 14f)
     }
 
-    private fun chromaDenoise(px: IntArray, w: Int, h: Int, strength: Float) {
+    private fun denoise(px: IntArray, w: Int, h: Int, sigma: Float) {
+        if (w < 16 || h < 16) return
+        val s = sigma.coerceIn(0.6f, 14f)
+        chromaDenoise(px, w, h, s)
+        lumaDenoise(px, w, h, s)
+        if (s > 6f) lumaDenoise(px, w, h, s * 0.8f)
+    }
+
+    private fun chromaDenoise(px: IntArray, w: Int, h: Int, s: Float) {
         val cw = w / 2
         val ch = h / 2
         val cb = IntArray(cw * ch)
@@ -1153,10 +1191,10 @@ object Pipeline {
             cb[y * cw + x] = sb shr 2
             cr[y * cw + x] = sr shr 2
         }
-        val rc = 2 + (strength * 3f).toInt()
+        val rc = (1 + (s / 2f).toInt()).coerceIn(2, 6)
         blurGray(cb, cw, ch, rc, 2)
         blurGray(cr, cw, ch, rc, 2)
-        val wFlat = ((0.6f + 0.35f * strength) * 256f).toInt()
+        val wFlat = ((0.55f + 0.4f * min(s / 10f, 1f)) * 256f).toInt()
         val wEdge = (0.3f * 256f).toInt()
         for (y in 0 until h) {
             val cy = min(y / 2, ch - 1)
@@ -1180,8 +1218,8 @@ object Pipeline {
         }
     }
 
-    private fun lumaDenoise(px: IntArray, w: Int, h: Int, strength: Float) {
-        val thr = (6 + 16 * strength).toInt()
+    private fun lumaDenoise(px: IntArray, w: Int, h: Int, s: Float) {
+        val thr = (2f * s + 2f).toInt().coerceIn(3, 24)
         var prevY = IntArray(w)
         var curY = IntArray(w)
         var nextY = IntArray(w)
@@ -1219,6 +1257,77 @@ object Pipeline {
             curY = nextY
             nextY = t
         }
+    }
+
+    // ছবির "পপ": বড় আকারের স্থানীয় কনট্রাস্ট, ডিটেইলস ফুটে ওঠে
+    private fun clarity(px: IntArray, w: Int, h: Int, k: Float) {
+        if (k < 0.02f || w < 64 || h < 64) return
+        val gw = max(16, w / 8)
+        val gh = max(16, h / 8)
+        val grid = lumaGrid(px, w, h, gw, gh, 0, 0)
+        blurF(grid, gw, gh, 2, 1)
+        val bil = Bil(w, h, gw, gh)
+        for (y in 0 until h) {
+            bil.row(y)
+            val row = y * w
+            for (x in 0 until w) {
+                val p = px[row + x]
+                val r = (p shr 16) and 255
+                val g = (p shr 8) and 255
+                val b = p and 255
+                val yy = (77 * r + 150 * g + 29 * b) shr 8
+                val d = ((yy - bil.at(grid, x)) * k).toInt().coerceIn(-28, 28)
+                if (d != 0) {
+                    px[row + x] = (0xFF shl 24) or ((r + d).coerceIn(0, 255) shl 16) or
+                        ((g + d).coerceIn(0, 255) shl 8) or (b + d).coerceIn(0, 255)
+                }
+            }
+        }
+    }
+
+    // ধারালো করা (৩x৩), নয়েজের মাপ অনুযায়ী ছোট দানা বাদ দিয়ে
+    private fun sharpen2(px: IntArray, w: Int, h: Int, amt: Float, core: Int) {
+        val k = (amt * 256f).toInt()
+        var prev = IntArray(w)
+        var cur = IntArray(w)
+        var next = IntArray(w)
+        System.arraycopy(px, 0, prev, 0, w)
+        System.arraycopy(px, 0, cur, 0, w)
+        for (y in 0 until h) {
+            val ny = if (y + 1 < h) y + 1 else y
+            System.arraycopy(px, ny * w, next, 0, w)
+            val base = y * w
+            for (x in 1 until w - 1) {
+                val c = cur[x]
+                val a1 = prev[x - 1]; val a2 = prev[x]; val a3 = prev[x + 1]
+                val b1 = cur[x - 1]; val b3 = cur[x + 1]
+                val c1 = next[x - 1]; val c2 = next[x]; val c3 = next[x + 1]
+                val ar = (((a1 shr 16) and 255) + ((a2 shr 16) and 255) + ((a3 shr 16) and 255) +
+                    ((b1 shr 16) and 255) + ((b3 shr 16) and 255) +
+                    ((c1 shr 16) and 255) + ((c2 shr 16) and 255) + ((c3 shr 16) and 255)) shr 3
+                val ag = (((a1 shr 8) and 255) + ((a2 shr 8) and 255) + ((a3 shr 8) and 255) +
+                    ((b1 shr 8) and 255) + ((b3 shr 8) and 255) +
+                    ((c1 shr 8) and 255) + ((c2 shr 8) and 255) + ((c3 shr 8) and 255)) shr 3
+                val ab = ((a1 and 255) + (a2 and 255) + (a3 and 255) + (b1 and 255) + (b3 and 255) +
+                    (c1 and 255) + (c2 and 255) + (c3 and 255)) shr 3
+                val nr = sh2((c shr 16) and 255, ar, k, core)
+                val ng = sh2((c shr 8) and 255, ag, k, core)
+                val nb = sh2(c and 255, ab, k, core)
+                px[base + x] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+            }
+            val t = prev
+            prev = cur
+            cur = next
+            next = t
+        }
+    }
+
+    private fun sh2(v: Int, avg: Int, k: Int, core: Int): Int {
+        val d = v - avg
+        val ad = abs(d)
+        if (ad <= core) return v
+        val dd = min(((ad - core) * k) shr 9, 40)
+        return (if (d > 0) v + dd else v - dd).coerceIn(0, 255)
     }
 
     // ---------- নতুন HDR: মূল ছবির ডিটেইলস রেখে আলো-ছায়া ঠিক করা ----------

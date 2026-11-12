@@ -94,6 +94,26 @@
         android:paddingBottom="24dp">
 
         <LinearLayout
+            android:id="@+id/detailRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:text="Detail"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/detailSeek"
+                android:layout_width="220dp"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="50" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/brightRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
