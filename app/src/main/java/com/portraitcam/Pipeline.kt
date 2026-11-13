@@ -55,6 +55,7 @@ class Merged(val px: IntArray, val w: Int, val h: Int) {
 object Pipeline {
 
     @Volatile var note: String = ""
+    @Volatile var diag: String = ""
 
     private val segmenter by lazy {
         Segmentation.getClient(
@@ -149,6 +150,8 @@ object Pipeline {
         if (p.native) sigma = min(sigma, 3f)
         progress("নয়েজ কমানো হচ্ছে…")
         denoise(m.px, m.w, m.h, sigma)
+        diag = String.format(java.util.Locale.US, "নয়েজ σ=%.1f→%.1f | ফ্রেম %d | গড় আলো %d | ডিনয়েজ %s",
+            sigma0, sigma, shotsX.size, meanL, if (sigma >= 1.8f) "হ্যাঁ" else "না")
         var px0 = m.px
         var mw = m.w
         var mh = m.h

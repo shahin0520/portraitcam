@@ -129,6 +129,8 @@ class MainActivity : AppCompatActivity() {
     private var flash = ImageCapture.FLASH_MODE_OFF
     private var mode = 1            // 0 NIGHT, 1 PHOTO, 2 PORTRAIT, 3 VIDEO
     private var hdrMode = 1          // 0 OFF, 1 AUTO, 2 ON
+    private var procMode = 0          // 0 শুধু প্রসেস, 1 প্রসেস + ওরিজিনাল সেভ, 2 শুধু ওরিজিনাল
+    private val camExec = Executors.newSingleThreadExecutor()
     private var nrMode = 1           // 0 OFF, 1 ON, 2 MAX
     private var aiMode = 2           // 0 OFF, 1 FAST, 2 HQ
     private val sr by lazy { SuperRes(this) }
@@ -219,9 +221,7 @@ class MainActivity : AppCompatActivity() {
         tvStab = findViewById(R.id.tvStab)
         tvQual = findViewById(R.id.tvQual)
         tvInfo = findViewById(R.id.tvInfo)
-        tvInfo.text = "DEPTH\nTEST"
-        tvInfo.setOnClickListener { showCameraReport() }
-        tvInfo.visibility = View.GONE
+        tvInfo.setOnClickListener { procMode = (procMode + 1) % 3; updateTop() }
         tvBusy = findViewById(R.id.tvBusy)
         tvCount = findViewById(R.id.tvCount)
         tvNight = findViewById(R.id.tvNight)
@@ -376,7 +376,7 @@ class MainActivity : AppCompatActivity() {
         blurRow.visibility = if (mode == 2 && !nativeMode) View.VISIBLE else View.GONE
         beautyRow.visibility = if (mode == 1 || mode == 2) View.VISIBLE else View.GONE
         val v = mode == 3
-        listOf(tvHdr, tvNr, tvAi, tvEnh, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
+        listOf(tvHdr, tvNr, tvAi, tvEnh, tvInfo, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
         brightRow.visibility = if (v) View.GONE else View.VISIBLE
         detailRow.visibility = if (v) View.GONE else View.VISIBLE
         listOf(tvFps, tvStab, tvQual).forEach { it.visibility = if (v) View.VISIBLE else View.GONE }
@@ -400,6 +400,7 @@ class MainActivity : AppCompatActivity() {
         tvNr.text = "NR\n" + listOf("OFF", "ON", "MAX")[nrMode]
         tvAi.text = "AI ZOOM\n" + listOf("OFF", "FAST", "HQ")[aiMode]
         tvEnh.text = "ENHANCE\nGALLERY"
+        tvInfo.text = "ORIGINAL\n" + listOf("OFF", "SAVE", "ONLY")[procMode]
         tvGrid.text = "GRID\n" + (if (gridOn) "ON" else "OFF")
         tvFilter.text = "FILTER\n" + filterNames[filterIdx]
         tvRes.text = "RES\n" + listOf("12MP", "16MP", "MAX")[resIdx]
@@ -413,6 +414,7 @@ class MainActivity : AppCompatActivity() {
         tint(tvNr, nrMode != 0)
         tint(tvAi, aiMode != 0)
         tint(tvEnh, false)
+        tint(tvInfo, procMode != 0)
         tint(tvGrid, gridOn)
         tint(tvFilter, filterIdx != 0)
         tint(tvRes, resIdx == 2)
@@ -981,7 +983,12 @@ class MainActivity : AppCompatActivity() {
                 merge = 1
             }
         }
-        val soft = !native && zoom > 1.05f
+        val pm = procMode
+        if (pm == 2) {
+            evs = listOf(0)
+            merge = 0
+        }
+        val soft = !native && zoom > 1.05f && pm != 2
         val params = Params(
             front = lens == CameraSelector.LENS_FACING_FRONT,
             zoom = zoom,
@@ -1024,12 +1031,17 @@ class MainActivity : AppCompatActivity() {
                 restore()
                 setBusy(null)
                 busy = false
-                submitJob(shots, params)
+                if (pm == 2) {
+                    submitOriginalOnly(shots)
+                } else {
+                    if (pm == 1) submitOriginal(shots)
+                    submitJob(shots, params)
+                }
                 return
             }
             val setEv = try { cam.cameraControl.setExposureCompensationIndex(evs[i]) } catch (e: Throwable) { null }
             val go = Runnable {
-                ic.takePicture(io, object : ImageCapture.OnImageCapturedCallback() {
+                ic.takePicture(camExec, object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
                         try {
                             val buf = image.planes[0].buffer
@@ -1064,6 +1076,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- ওরিজিনাল (কোনো প্রসেস ছাড়া ক্যামেরার ছবি) সেভ ----------
+
+    private fun saveOriginalBytes(s: Shot): Uri {
+        val name = "ORIG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
+        val v = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PortraitCam/Original")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
+            ?: throw IllegalStateException("সেভ করা যায়নি")
+        contentResolver.openOutputStream(uri)!!.use { it.write(s.jpeg) }
+        try {
+            contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
+                val ex = ExifInterface(pfd.fileDescriptor)
+                ex.setAttribute(
+                    ExifInterface.TAG_ORIENTATION,
+                    when (s.rot) { 90 -> "6"; 180 -> "3"; 270 -> "8"; else -> "1" }
+                )
+                ex.saveAttributes()
+            }
+        } catch (e: Throwable) { }
+        v.clear()
+        v.put(MediaStore.Images.Media.IS_PENDING, 0)
+        contentResolver.update(uri, v, null, null)
+        return uri
+    }
+
+    private fun submitOriginal(shots: List<Shot>) {
+        val s = shots.firstOrNull() ?: return
+        camExec.execute {
+            try { saveOriginalBytes(s) } catch (e: Throwable) { }
+        }
+    }
+
+    private fun submitOriginalOnly(shots: List<Shot>) {
+        val s = shots.firstOrNull() ?: return
+        camExec.execute {
+            try {
+                val uri = saveOriginalBytes(s)
+                val o = BitmapFactory.Options().apply { inSampleSize = 16 }
+                var th = BitmapFactory.decodeByteArray(s.jpeg, 0, s.jpeg.size, o)
+                if (th != null && s.rot != 0) {
+                    val mx = Matrix().apply { postRotate(s.rot.toFloat()) }
+                    th = Bitmap.createBitmap(th, 0, 0, th.width, th.height, mx, true)
+                }
+                runOnUiThread {
+                    lastUri = uri
+                    if (th != null) gallery.setImageBitmap(th)
+                    Toast.makeText(this, "ওরিজিনাল ছবি সেভ হয়েছে (প্রসেস ছাড়া)", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { Toast.makeText(this, "সেভ হয়নি: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
     private fun updateJobsUi() {
         val n = jobsPending.get()
         if (n <= 0) {
@@ -1090,13 +1160,15 @@ class MainActivity : AppCompatActivity() {
             val th = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
             bmp.recycle()
             val note = Pipeline.note
+            val diag = Pipeline.diag
             runOnUiThread {
                 lastUri = uri
                 gallery.setImageBitmap(th)
                 Toast.makeText(
                     this,
                     (if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ ছবি সেভ হয়েছে" else "ছবি সেভ হয়েছে") +
-                        (if (note.isNotEmpty()) "\n" + note else ""),
+                        (if (note.isNotEmpty()) "\n" + note else "") +
+                        (if (diag.isNotEmpty()) "\n" + diag else ""),
                     Toast.LENGTH_LONG
                 ).show()
             }
