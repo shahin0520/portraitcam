@@ -41,6 +41,7 @@
             <TextView android:id="@+id/tvHdr" style="@style/Top" />
             <TextView android:id="@+id/tvNr" style="@style/Top" />
             <TextView android:id="@+id/tvAi" style="@style/Top" />
+            <TextView android:id="@+id/tvTele" style="@style/Top" />
             <TextView android:id="@+id/tvEnh" style="@style/Top" />
             <TextView android:id="@+id/tvGrid" style="@style/Top" />
             <TextView android:id="@+id/tvFilter" style="@style/Top" />

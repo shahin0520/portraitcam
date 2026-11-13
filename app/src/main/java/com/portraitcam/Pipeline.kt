@@ -43,6 +43,7 @@ class Params(
     val ai: Int,
     val bright: Int,
     val detail: Int,
+    val tele: Boolean,
     val nrBoost: Float,
     val dark: Boolean,
     val native: Boolean
@@ -156,12 +157,31 @@ object Pipeline {
         var mw = m.w
         var mh = m.h
         var aiDone = false
+        var rotatedEarly = false
         note = ""
+        // জুম-পোর্ট্রেট: আগে সোজা করে নিই, যাতে মানুষের অংশ চিনে শুধু সেখানে AI চালানো যায়
+        if (up > 1.01f && useAi && p.portrait && mw.toLong() * mh <= 6_000_000L) {
+            val tb = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
+            tb.setPixels(px0, 0, mw, 0, 0, mw, mh)
+            val mxr = Matrix()
+            mxr.postRotate(first.rot.toFloat())
+            if (p.front) mxr.postScale(-1f, 1f)
+            val rb = Bitmap.createBitmap(tb, 0, 0, mw, mh, mxr, true)
+            if (rb !== tb) tb.recycle()
+            mw = rb.width
+            mh = rb.height
+            px0 = IntArray(mw * mh)
+            rb.getPixels(px0, 0, mw, 0, 0, mw, mh)
+            rb.recycle()
+            rotatedEarly = true
+        }
         if (up > 1.01f) {
             val nw = max(2, (mw * up).toInt() and 1.inv())
             val nh = max(2, (mh * up).toInt() and 1.inv())
             if (useAi) {
-                val r = aiUpscale(px0, mw, mh, p.ai, sr!!, 90, progress)
+                val box = if (rotatedEarly) personBox(px0, mw, mh) else null
+                val r = if (box != null) aiSubject(px0, mw, mh, box, nw, nh, p.ai, sr!!, progress)
+                else aiUpscale(px0, mw, mh, p.ai, sr!!, 90, progress)
                 if (r != null) {
                     px0 = r.px
                     if (abs(r.w - nw) > 8 || abs(r.h - nh) > 8) {
@@ -188,12 +208,14 @@ object Pipeline {
         var bmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
         bmp.setPixels(px0, 0, mw, 0, 0, mw, mh)
         px0 = IntArray(0)
-        val mx = Matrix()
-        mx.postRotate(first.rot.toFloat())
-        if (p.front) mx.postScale(-1f, 1f)
-        val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mx, true)
-        if (rotated !== bmp) bmp.recycle()
-        bmp = rotated
+        if (!rotatedEarly) {
+            val mx = Matrix()
+            mx.postRotate(first.rot.toFloat())
+            if (p.front) mx.postScale(-1f, 1f)
+            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mx, true)
+            if (rotated !== bmp) bmp.recycle()
+            bmp = rotated
+        }
 
         progress("প্রসেস হচ্ছে…")
         val w = bmp.width
@@ -218,7 +240,8 @@ object Pipeline {
         px = IntArray(0)
         if (mask != null) {
             progress("ব্যাকগ্রাউন্ড ব্লার…")
-            out = composite(out, mask, p.blur)
+            val bgScale = if (p.tele && p.softZoom && z > 1.05f) (1f + 0.15f * (z - 1f)).coerceAtMost(1.4f) else 1f
+            out = composite(out, mask, p.blur, bgScale)
         }
         if (p.beauty > 0) {
             progress("ফেস স্মুদ…")
@@ -711,14 +734,50 @@ object Pipeline {
         return FloatArray(n) { (mA[it] * ig[it] + mB[it]).coerceIn(0f, 1f) }
     }
 
-    private fun composite(base: Bitmap, mask: Bitmap, level: Int): Bitmap {
+    private fun composite(base: Bitmap, mask: Bitmap, level: Int, bgScale: Float): Bitmap {
         val w = base.width
         val h = base.height
         val bg = blurredBackground(base, mask, level)
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         val full = Rect(0, 0, w, h)
-        c.drawBitmap(bg, null, full, Paint(Paint.FILTER_BITMAP_FLAG))
+        val fp = Paint(Paint.FILTER_BITMAP_FLAG)
+        if (bgScale > 1.01f) {
+            // টেলিফটো লুক: ব্যাকগ্রাউন্ড মানুষের কেন্দ্র ধরে একটু বড় (কাছে টানা), যেমন টেলিফটো লেন্সে হয়
+            var cx = 0.5f
+            var cy = 0.5f
+            val mw = mask.width
+            val mh = mask.height
+            val mpx = IntArray(mw * mh)
+            mask.getPixels(mpx, 0, mw, 0, 0, mw, mh)
+            var sx = 0.0
+            var sy = 0.0
+            var sa = 0.0
+            var yy = 0
+            while (yy < mh) {
+                var xx = 0
+                while (xx < mw) {
+                    val a = (mpx[yy * mw + xx] ushr 24).toDouble()
+                    sx += a * xx
+                    sy += a * yy
+                    sa += a
+                    xx += 6
+                }
+                yy += 6
+            }
+            if (sa > 0) {
+                cx = (sx / sa / mw).toFloat()
+                cy = (sy / sa / mh).toFloat()
+            }
+            c.save()
+            c.translate(cx * w, cy * h)
+            c.scale(bgScale, bgScale)
+            c.translate(-cx * w, -cy * h)
+            c.drawBitmap(bg, null, full, fp)
+            c.restore()
+        } else {
+            c.drawBitmap(bg, null, full, fp)
+        }
         val bc = Canvas(base)
         val mp = Paint(Paint.FILTER_BITMAP_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
         bc.drawBitmap(mask, null, full, mp)
@@ -981,6 +1040,99 @@ object Pipeline {
     // ---------- JPEG ব্লক কমানো, নয়েজ কমানো, ভালো আপস্কেল ----------
 
     private class SrOut(val px: IntArray, val w: Int, val h: Int)
+
+    // মানুষ কোথায় তা খুঁজে বের করা (বক্স)
+    private fun personBox(px: IntArray, w: Int, h: Int): Rect? {
+        return try {
+            val s = min(1f, 512f / max(w, h))
+            val sw = max(16, (w * s).toInt())
+            val sh = max(16, (h * s).toInt())
+            val sp = IntArray(sw * sh)
+            for (y in 0 until sh) {
+                val yy = min(h - 1, (y / s).toInt())
+                for (x in 0 until sw) sp[y * sw + x] = px[yy * w + min(w - 1, (x / s).toInt())]
+            }
+            val sb = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+            sb.setPixels(sp, 0, sw, 0, 0, sw, sh)
+            val m = Tasks.await(segmenter.process(InputImage.fromBitmap(sb, 0)))
+            sb.recycle()
+            val buf = m.buffer
+            val mw = m.width
+            val mh = m.height
+            val conf = FloatArray(mw * mh)
+            for (i in conf.indices) conf[i] = buf.float
+            cleanMask(conf, mw, mh)
+            var x0 = mw
+            var y0 = mh
+            var x1 = -1
+            var y1 = -1
+            var cnt = 0
+            for (y in 0 until mh) for (x in 0 until mw) {
+                if (conf[y * mw + x] > 0.5f) {
+                    cnt++
+                    if (x < x0) x0 = x
+                    if (x > x1) x1 = x
+                    if (y < y0) y0 = y
+                    if (y > y1) y1 = y
+                }
+            }
+            if (x1 < 0 || cnt < mw * mh * 0.03f) return null
+            val mxm = (x1 - x0) * 0.12f
+            val mym = (y1 - y0) * 0.12f
+            val fx = w.toFloat() / mw
+            val fy = h.toFloat() / mh
+            Rect(
+                max(0, ((x0 - mxm) * fx).toInt()), max(0, ((y0 - mym) * fy).toInt()),
+                min(w, ((x1 + 1 + mxm) * fx).toInt()), min(h, ((y1 + 1 + mym) * fy).toInt())
+            )
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    // শুধু মানুষের অংশে AI, বাকিটা সাধারণ আপস্কেল (ব্যাকগ্রাউন্ড তো ব্লার হবে)
+    private fun aiSubject(px: IntArray, w: Int, h: Int, box: Rect, nw: Int, nh: Int, mode: Int, sr: SuperRes, progress: (String) -> Unit): SrOut? {
+        val bw = box.width()
+        val bh = box.height()
+        if (bw < 32 || bh < 32) return null
+        val sub = IntArray(bw * bh)
+        for (y in 0 until bh) System.arraycopy(px, (box.top + y) * w + box.left, sub, y * bw, bw)
+        val r = aiUpscale(sub, bw, bh, mode, sr, 90, progress) ?: return null
+        progress("ছবি সাজানো হচ্ছে…")
+        val base = lanczos(px, w, h, nw, nh)
+        val fxs = nw.toFloat() / w
+        val fys = nh.toFloat() / h
+        val tx0 = (box.left * fxs).toInt()
+        val ty0 = (box.top * fys).toInt()
+        val tw = max(2, (bw * fxs).toInt())
+        val th = max(2, (bh * fys).toInt())
+        val reg = if (r.w == tw && r.h == th) r.px else lanczos(r.px, r.w, r.h, tw, th)
+        val feather = max(4, min(tw, th) / 20)
+        for (y in 0 until th) {
+            val dy = ty0 + y
+            if (dy >= nh) break
+            val ey = min(y, th - 1 - y)
+            for (x in 0 until tw) {
+                val dx = tx0 + x
+                if (dx >= nw) break
+                val e = min(min(x, tw - 1 - x), ey)
+                val q = reg[y * tw + x]
+                if (e >= feather) {
+                    base[dy * nw + dx] = q
+                } else {
+                    val a = e / feather.toFloat()
+                    val o = base[dy * nw + dx]
+                    val nr = (((o shr 16) and 255) + (((q shr 16) and 255) - ((o shr 16) and 255)) * a).toInt()
+                    val ng = (((o shr 8) and 255) + (((q shr 8) and 255) - ((o shr 8) and 255)) * a).toInt()
+                    val nb = ((o and 255) + ((q and 255) - (o and 255)) * a).toInt()
+                    base[dy * nw + dx] = (0xFF shl 24) or (nr.coerceIn(0, 255) shl 16) or
+                        (ng.coerceIn(0, 255) shl 8) or nb.coerceIn(0, 255)
+                }
+            }
+        }
+        note = note + " — শুধু মানুষের অংশে"
+        return SrOut(base, nw, nh)
+    }
 
     private fun aiUpscale(px: IntArray, w: Int, h: Int, mode: Int, sr: SuperRes, maxSec: Int, progress: (String) -> Unit): SrOut? {
         var ipx = px

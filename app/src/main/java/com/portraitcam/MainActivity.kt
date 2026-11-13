@@ -91,6 +91,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvHdr: TextView
     private lateinit var tvNr: TextView
     private lateinit var tvAi: TextView
+    private lateinit var tvTele: TextView
     private lateinit var tvEnh: TextView
     private lateinit var brightSeek: SeekBar
     private lateinit var brightRow: View
@@ -131,6 +132,7 @@ class MainActivity : AppCompatActivity() {
     private var hdrMode = 1          // 0 OFF, 1 AUTO, 2 ON
     private var procMode = 0          // 0 শুধু প্রসেস, 1 প্রসেস + ওরিজিনাল সেভ, 2 শুধু ওরিজিনাল
     private val camExec = Executors.newSingleThreadExecutor()
+    private var teleOn = true
     private var nrMode = 1           // 0 OFF, 1 ON, 2 MAX
     private var aiMode = 2           // 0 OFF, 1 FAST, 2 HQ
     private val sr by lazy { SuperRes(this) }
@@ -208,6 +210,7 @@ class MainActivity : AppCompatActivity() {
         tvHdr = findViewById(R.id.tvHdr)
         tvNr = findViewById(R.id.tvNr)
         tvAi = findViewById(R.id.tvAi)
+        tvTele = findViewById(R.id.tvTele)
         tvEnh = findViewById(R.id.tvEnh)
         brightSeek = findViewById(R.id.brightSeek)
         brightRow = findViewById(R.id.brightRow)
@@ -274,6 +277,7 @@ class MainActivity : AppCompatActivity() {
         tvHdr.setOnClickListener { hdrMode = (hdrMode + 1) % 3; updateTop(); bind() }
         tvNr.setOnClickListener { nrMode = (nrMode + 1) % 3; updateTop(); bind() }
         tvAi.setOnClickListener { aiMode = (aiMode + 1) % 3; updateTop() }
+        tvTele.setOnClickListener { teleOn = !teleOn; updateTop() }
         tvEnh.setOnClickListener { if (recording == null) pickImage.launch("image/*") }
         tvGrid.setOnClickListener { gridOn = !gridOn; updateTop() }
         tvFilter.setOnClickListener { filterIdx = (filterIdx + 1) % filterNames.size; updateTop() }
@@ -376,7 +380,7 @@ class MainActivity : AppCompatActivity() {
         blurRow.visibility = if (mode == 2 && !nativeMode) View.VISIBLE else View.GONE
         beautyRow.visibility = if (mode == 1 || mode == 2) View.VISIBLE else View.GONE
         val v = mode == 3
-        listOf(tvHdr, tvNr, tvAi, tvEnh, tvInfo, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
+        listOf(tvHdr, tvNr, tvAi, tvTele, tvEnh, tvInfo, tvFilter, tvRes, tvPhone).forEach { it.visibility = if (v) View.GONE else View.VISIBLE }
         brightRow.visibility = if (v) View.GONE else View.VISIBLE
         detailRow.visibility = if (v) View.GONE else View.VISIBLE
         listOf(tvFps, tvStab, tvQual).forEach { it.visibility = if (v) View.VISIBLE else View.GONE }
@@ -400,6 +404,7 @@ class MainActivity : AppCompatActivity() {
         tvNr.text = "NR\n" + listOf("OFF", "ON", "MAX")[nrMode]
         tvAi.text = "AI ZOOM\n" + listOf("OFF", "FAST", "HQ")[aiMode]
         tvEnh.text = "ENHANCE\nGALLERY"
+        tvTele.text = "TELE LOOK\n" + (if (teleOn) "ON" else "OFF")
         tvInfo.text = "ORIGINAL\n" + listOf("OFF", "SAVE", "ONLY")[procMode]
         tvGrid.text = "GRID\n" + (if (gridOn) "ON" else "OFF")
         tvFilter.text = "FILTER\n" + filterNames[filterIdx]
@@ -414,6 +419,7 @@ class MainActivity : AppCompatActivity() {
         tint(tvNr, nrMode != 0)
         tint(tvAi, aiMode != 0)
         tint(tvEnh, false)
+        tint(tvTele, teleOn)
         tint(tvInfo, procMode != 0)
         tint(tvGrid, gridOn)
         tint(tvFilter, filterIdx != 0)
@@ -997,7 +1003,8 @@ class MainActivity : AppCompatActivity() {
             hdrSingle = hdrWanted && merge != 2,
             night = mode == 0 && !native,
             portrait = mode == 2 && !native,
-            blur = blurSeek.progress,
+            blur = (blurSeek.progress + (if (teleOn && soft && mode == 2) ((zoom - 1f) * 15f).toInt().coerceAtMost(30) else 0)).coerceAtMost(100),
+            tele = teleOn,
             beauty = if (mode == 0) 0 else beautySeek.progress,
             filter = filterIdx,
             ai = aiMode,
