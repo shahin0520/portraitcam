@@ -51,6 +51,8 @@ class Params(
 
 class Merged(val px: IntArray, val w: Int, val h: Int) {
     var hdrOk: Boolean = false
+    var scale: Float = 1f     // সুপার-রেজোলিউশনে ছবি কতগুণ বড় হয়ে এসেছে
+    var used: Int = 1         // কয়টা ফ্রেম কাজে লেগেছে
 }
 
 object Pipeline {
@@ -115,9 +117,9 @@ object Pipeline {
         progress("ফ্রেম মেলানো হচ্ছে…")
         // সবচেয়ে ধারালো ফ্রেম (বড় JPEG) আগে, ঝাপসা ফ্রেম বাদ
         var shotsX = shots
-        if (p.merge == 1 && shots.size >= 3) {
+        if ((p.merge == 1 || p.merge == 3) && shots.size >= 3) {
             val ordered = shots.sortedByDescending { it.jpeg.size }
-            val keep = ordered.filter { it.jpeg.size >= ordered[0].jpeg.size * 0.85 }
+            val keep = ordered.filter { it.jpeg.size >= ordered[0].jpeg.size * (if (p.merge == 3) 0.75 else 0.85) }
             shotsX = if (keep.size >= 2) keep else ordered.take(2)
         }
         val first = shotsX[0]
@@ -136,7 +138,7 @@ object Pipeline {
 
         val ghost = if (p.dark) 160 else 100
         val m = merge(shotsX, rect, sample, p.merge, ghost)
-        if (sample == 1) deblock(m.px, m.w, m.h, rect.left, rect.top)
+        if (sample == 1 && m.scale == 1f) deblock(m.px, m.w, m.h, rect.left, rect.top)
         var msum = 0L
         var mcnt = 0
         var si = 0
@@ -144,7 +146,7 @@ object Pipeline {
         val meanL = if (mcnt > 0) (msum / mcnt).toInt() else 120
         val kb = brighten(m.px, m.w, m.h, p.bright, meanL)
         val up = if (p.softZoom) min(z, 5f) else 1f
-        val useAi = p.ai > 0 && sr != null && up > 1.01f
+        val useAi = p.ai == 2 && sr != null && up > 1.01f && m.scale == 1f
         val sigma0 = estimateSigma(m.px, m.w, m.h)
         var sigma = sigma0 * (1f + p.nrBoost * 2f).coerceIn(0.5f, 1.8f)
         if (useAi) sigma *= 0.6f
@@ -152,7 +154,7 @@ object Pipeline {
         progress("নয়েজ কমানো হচ্ছে…")
         denoise(m.px, m.w, m.h, sigma)
         diag = String.format(java.util.Locale.US, "নয়েজ σ=%.1f→%.1f | ফ্রেম %d | গড় আলো %d | ডিনয়েজ %s",
-            sigma0, sigma, shotsX.size, meanL, if (sigma >= 1.8f) "হ্যাঁ" else "না")
+            sigma0, sigma, m.used.coerceAtLeast(shotsX.size.coerceAtMost(if (m.scale > 1f) 0 else 99)), meanL, if (sigma >= 1.8f) "হ্যাঁ" else "না")
         var px0 = m.px
         var mw = m.w
         var mh = m.h
@@ -175,9 +177,10 @@ object Pipeline {
             rb.recycle()
             rotatedEarly = true
         }
-        if (up > 1.01f) {
-            val nw = max(2, (mw * up).toInt() and 1.inv())
-            val nh = max(2, (mh * up).toInt() and 1.inv())
+        val upLeft = up / m.scale
+        if (upLeft > 1.04f) {
+            val nw = max(2, (mw * upLeft).toInt() and 1.inv())
+            val nh = max(2, (mh * upLeft).toInt() and 1.inv())
             if (useAi) {
                 val box = if (rotatedEarly) personBox(px0, mw, mh) else null
                 val r = if (box != null) aiSubject(px0, mw, mh, box, nw, nh, p.ai, sr!!, progress)
@@ -202,8 +205,10 @@ object Pipeline {
                 mw = nw
                 mh = nh
             }
-        } else if (p.ai > 0) {
-            note = "AI আপস্কেল শুধু জুম (১.০৫x-এর বেশি) করলে চলে"
+        } else if (m.scale > 1f) {
+            note = "সুপার-রেজোলিউশন জুম হয়েছে (${m.used}টা ছবি মিলিয়ে)"
+        } else if (p.ai > 0 && up <= 1.01f) {
+            note = "জুম (১.০৫x-এর বেশি) করলে সুপার-রেজোলিউশন/AI চলে"
         }
         var bmp = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
         bmp.setPixels(px0, 0, mw, 0, 0, mw, mh)
@@ -230,7 +235,7 @@ object Pipeline {
         val dk = p.detail / 100f
         val core = (0.8f * sigma + 2f).toInt().coerceIn(2, 10)
         var amt = if (p.native) 0.5f else 0.4f + dk * 0.8f
-        amt = if (aiDone) amt * 0.5f else amt * (1f + 0.08f * (z - 1f)).coerceAtMost(1.3f)
+        amt = if (aiDone) amt * 0.5f else amt * (1f + 0.08f * (z - 1f)).coerceAtMost(1.3f) * (if (m.scale > 1f) 1.25f else 1f)
         val ck = if (p.native) dk * 0.15f else dk * 0.3f * (if (aiDone) 0.6f else 1f)
         progress("ডিটেইলস বাড়ানো হচ্ছে…")
         clarity(px, w, h, ck)
@@ -419,6 +424,7 @@ object Pipeline {
 
     private fun merge(shots: List<Shot>, rect: Rect, sample: Int, mode: Int, ghost: Int): Merged {
         if (mode == 2) return mergeHdr(shots, rect, sample)
+        if (mode == 3) return superResolve(shots, rect, sample)
         val ref = decode(shots[0], rect, sample)
         if (shots.size == 1 || mode == 0) return ref
         val w = ref.w
@@ -1206,7 +1212,7 @@ object Pipeline {
         var upscaled = false
         if (wantAi) {
             if (w.toLong() * h <= 1_300_000L) {
-                val r = aiUpscale(px, w, h, ai, sr!!, 150, progress)
+                val r = aiUpscale(px, w, h, 2, sr!!, 150, progress)
                 if (r != null) {
                     px = r.px
                     w = r.w
@@ -1483,6 +1489,252 @@ object Pipeline {
         if (ad <= core) return v
         val dd = min(((ad - core) * k) shr 9, 24)
         return (if (d > 0) v + dd else v - dd).coerceIn(0, 255)
+    }
+
+    // ---------- সুপার-রেজোলিউশন জুম (Pixel-এর Super Res Zoom-এর মতো) ----------
+    // অনেক ছবির প্রতিটার সূক্ষ্ম সরণ (হাতের কাঁপুনি) মেপে, সবগুলো একটা বড় গ্রিডে বসিয়ে আসল ডিটেইলস বের করা
+
+    private fun lumaF(px: IntArray): FloatArray {
+        val o = FloatArray(px.size)
+        for (i in px.indices) {
+            val p = px[i]
+            o[i] = (77 * ((p shr 16) and 255) + 150 * ((p shr 8) and 255) + 29 * (p and 255)) / 256f
+        }
+        return o
+    }
+
+    private fun box3(src: FloatArray, w: Int, h: Int): FloatArray {
+        val tmp = FloatArray(src.size)
+        val out = FloatArray(src.size)
+        for (y in 0 until h) {
+            val r = y * w
+            for (x in 0 until w) {
+                tmp[r + x] = (src[r + max(0, x - 1)] + src[r + x] + src[r + min(w - 1, x + 1)]) / 3f
+            }
+        }
+        for (y in 0 until h) {
+            val y0 = max(0, y - 1) * w
+            val y1 = y * w
+            val y2 = min(h - 1, y + 1) * w
+            for (x in 0 until w) out[y1 + x] = (tmp[y0 + x] + tmp[y1 + x] + tmp[y2 + x]) / 3f
+        }
+        return out
+    }
+
+    // Lucas-Kanade: পূর্ণসংখ্যার সরণ থেকে শুরু করে ভগ্নাংশ পিক্সেল পর্যন্ত নির্ভুল সরণ
+    private fun refineShift(rs: FloatArray, cs: FloatArray, w: Int, h: Int, t0x: Float, t0y: Float): FloatArray {
+        var tx = t0x
+        var ty = t0y
+        val margin = 16
+        val step = 2
+        var resid = 0f
+        for (iter in 0 until 8) {
+            var a11 = 0.0
+            var a12 = 0.0
+            var a22 = 0.0
+            var b1 = 0.0
+            var b2 = 0.0
+            var sse = 0.0
+            var n = 0
+            var y = margin
+            while (y < h - margin) {
+                var x = margin
+                while (x < w - margin) {
+                    val fx = x + tx
+                    val fy = y + ty
+                    val x0 = floor(fx).toInt()
+                    val y0 = floor(fy).toInt()
+                    if (x0 < 1 || y0 < 1 || x0 >= w - 2 || y0 >= h - 2) { x += step; continue }
+                    val ax = fx - x0
+                    val ay = fy - y0
+                    val i = y0 * w + x0
+                    val v00 = cs[i]
+                    val v10 = cs[i + 1]
+                    val v01 = cs[i + w]
+                    val v11 = cs[i + w + 1]
+                    val wv = (v00 * (1f - ax) + v10 * ax) * (1f - ay) + (v01 * (1f - ax) + v11 * ax) * ay
+                    val gx = (v10 - v00) * (1f - ay) + (v11 - v01) * ay
+                    val gy = (v01 - v00) * (1f - ax) + (v11 - v10) * ax
+                    val e = rs[y * w + x] - wv
+                    a11 += gx * gx
+                    a12 += gx * gy
+                    a22 += gy * gy
+                    b1 += gx * e
+                    b2 += gy * e
+                    sse += e * e
+                    n++
+                    x += step
+                }
+                y += step
+            }
+            if (n < 200) break
+            val det = a11 * a22 - a12 * a12 + 1e-6
+            val dx = (a22 * b1 - a12 * b2) / det
+            val dy = (a11 * b2 - a12 * b1) / det
+            tx += dx.toFloat()
+            ty += dy.toFloat()
+            resid = sqrt(sse / n).toFloat()
+            if (abs(dx) < 0.005 && abs(dy) < 0.005) break
+        }
+        return floatArrayOf(tx, ty, resid)
+    }
+
+    private fun sampleBil(px: IntArray, w: Int, h: Int, fx: Float, fy: Float): Int {
+        val x0 = floor(fx).toInt().coerceIn(0, w - 2)
+        val y0 = floor(fy).toInt().coerceIn(0, h - 2)
+        val ax = (fx - x0).coerceIn(0f, 1f)
+        val ay = (fy - y0).coerceIn(0f, 1f)
+        val i = y0 * w + x0
+        val p00 = px[i]
+        val p10 = px[i + 1]
+        val p01 = px[i + w]
+        val p11 = px[i + w + 1]
+        var out = 0xFF shl 24
+        var sh = 16
+        while (sh >= 0) {
+            val a = (p00 shr sh) and 255
+            val b = (p10 shr sh) and 255
+            val c = (p01 shr sh) and 255
+            val d = (p11 shr sh) and 255
+            val v = (a * (1f - ax) + b * ax) * (1f - ay) + (c * (1f - ax) + d * ax) * ay
+            out = out or ((v + 0.5f).toInt().coerceIn(0, 255) shl sh)
+            sh -= 8
+        }
+        return out
+    }
+
+    private fun splatFrame(
+        px: IntArray, w: Int, h: Int, gw: Int, gh: Int, g: Float, tx: Float, ty: Float,
+        wt: Array<FloatArray>, q: Int,
+        accR: FloatArray, accG: FloatArray, accB: FloatArray, accW: FloatArray,
+        refL: FloatArray, curL: FloatArray?, ghostThr: Float
+    ) {
+        for (y in 0 until h) {
+            val yy = (y - ty + 0.5f) * g - 0.5f
+            val yf = floor(yy)
+            val yi = yf.toInt()
+            val wy = wt[((yy - yf) * q).toInt().coerceIn(0, q - 1)]
+            for (x in 0 until w) {
+                val i = y * w + x
+                if (curL != null) {
+                    val rx = x - tx
+                    val ry = y - ty
+                    val x0 = floor(rx).toInt()
+                    val y0 = floor(ry).toInt()
+                    if (x0 < 0 || y0 < 0 || x0 >= w - 1 || y0 >= h - 1) continue
+                    val ax = rx - x0
+                    val ay = ry - y0
+                    val j = y0 * w + x0
+                    val rv = (refL[j] * (1f - ax) + refL[j + 1] * ax) * (1f - ay) +
+                        (refL[j + w] * (1f - ax) + refL[j + w + 1] * ax) * ay
+                    if (abs(curL[i] - rv) > ghostThr) continue
+                }
+                val xx = (x - tx + 0.5f) * g - 0.5f
+                val xf = floor(xx)
+                val xi = xf.toInt()
+                val wx = wt[((xx - xf) * q).toInt().coerceIn(0, q - 1)]
+                val p = px[i]
+                val r = ((p shr 16) and 255).toFloat()
+                val gg = ((p shr 8) and 255).toFloat()
+                val b = (p and 255).toFloat()
+                for (a in 0 until 4) {
+                    val gy = yi - 1 + a
+                    if (gy < 0 || gy >= gh) continue
+                    val wyv = wy[a]
+                    val row = gy * gw
+                    for (c in 0 until 4) {
+                        val gx = xi - 1 + c
+                        if (gx < 0 || gx >= gw) continue
+                        val wv = wyv * wx[c]
+                        val k = row + gx
+                        accR[k] += r * wv
+                        accG[k] += gg * wv
+                        accB[k] += b * wv
+                        accW[k] += wv
+                    }
+                }
+            }
+        }
+    }
+
+    private fun superResolve(shots: List<Shot>, rect: Rect, sample: Int): Merged {
+        val ref = decode(shots[0], rect, sample)
+        val w = ref.w
+        val h = ref.h
+        if (shots.size < 3 || w < 96 || h < 96) return ref
+        val g = min(2f, sqrt(8_000_000f / (w.toFloat() * h)))
+        if (g < 1.15f) return merge(shots, rect, sample, 1, 100)
+        val gw = (w * g).toInt()
+        val gh = (h * g).toInt()
+        val refL = lumaF(ref.px)
+        val refS = box3(refL, w, h)
+        val cf = if (min(w, h) >= 600) 8 else 4
+        val ff = max(2, cf / 2)
+        val rg = gradSmall(ref.px, w, h, cf)
+        val rg2 = gradSmall(ref.px, w, h, ff)
+        val accR = FloatArray(gw * gh)
+        val accG = FloatArray(gw * gh)
+        val accB = FloatArray(gw * gh)
+        val accW = FloatArray(gw * gh)
+        val q = 16
+        val sigma = max(0.5f, 0.3f * g)
+        val wt = Array(q) { qi ->
+            FloatArray(4) { t ->
+                val d = (t - 1) - qi / q.toFloat()
+                exp(-(d * d) / (2f * sigma * sigma))
+            }
+        }
+        splatFrame(ref.px, w, h, gw, gh, g, 0f, 0f, wt, q, accR, accG, accB, accW, refL, null, 0f)
+        var used = 1
+        for (k in 1 until shots.size) {
+            val cur = try { decode(shots[k], rect, sample) } catch (e: Throwable) { continue }
+            if (cur.w != w || cur.h != h) continue
+            val cg = gradSmall(cur.px, w, h, cf)
+            val s1 = findShift(rg, cg, 16, 0, 0)
+            val ratio = cf / ff
+            val cg2 = gradSmall(cur.px, w, h, ff)
+            val s2 = findShift(rg2, cg2, 3, s1[0] * ratio, s1[1] * ratio)
+            val curL = lumaF(cur.px)
+            val curS = box3(curL, w, h)
+            val r = refineShift(refS, curS, w, h, (s2[0] * ff).toFloat(), (s2[1] * ff).toFloat())
+            if (r[2] > 14f || abs(r[0]) > 30f || abs(r[1]) > 30f) continue   // ছবি মেলেনি (নড়ে গেছে)
+            splatFrame(cur.px, w, h, gw, gh, g, r[0], r[1], wt, q, accR, accG, accB, accW, refL, curL, 40f)
+            used++
+        }
+        if (used < 2) return ref
+        val out = IntArray(gw * gh)
+        for (gy in 0 until gh) {
+            val ry = (gy + 0.5f) / g - 0.5f
+            for (gx in 0 until gw) {
+                val k = gy * gw + gx
+                val wv = accW[k]
+                if (wv >= 0.6f) {
+                    out[k] = (0xFF shl 24) or
+                        ((accR[k] / wv + 0.5f).toInt().coerceIn(0, 255) shl 16) or
+                        ((accG[k] / wv + 0.5f).toInt().coerceIn(0, 255) shl 8) or
+                        (accB[k] / wv + 0.5f).toInt().coerceIn(0, 255)
+                } else {
+                    val rx = (gx + 0.5f) / g - 0.5f
+                    val base = sampleBil(ref.px, w, h, rx, ry)
+                    if (wv > 0.05f) {
+                        val a = wv / 0.6f
+                        val sr = (accR[k] / wv).coerceIn(0f, 255f)
+                        val sg = (accG[k] / wv).coerceIn(0f, 255f)
+                        val sb = (accB[k] / wv).coerceIn(0f, 255f)
+                        val nr = (((base shr 16) and 255) * (1f - a) + sr * a).toInt().coerceIn(0, 255)
+                        val ng = (((base shr 8) and 255) * (1f - a) + sg * a).toInt().coerceIn(0, 255)
+                        val nb = ((base and 255) * (1f - a) + sb * a).toInt().coerceIn(0, 255)
+                        out[k] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+                    } else {
+                        out[k] = base
+                    }
+                }
+            }
+        }
+        val res = Merged(out, gw, gh)
+        res.scale = g
+        res.used = used
+        return res
     }
 
     // ---------- নতুন HDR: মূল ছবির ডিটেইলস রেখে আলো-ছায়া ঠিক করা ----------

@@ -7,14 +7,14 @@
     <androidx.camera.view.PreviewView
         android:id="@+id/preview"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_marginTop="56dp" />
+        android:layout_height="400dp"
+        android:layout_marginTop="60dp" />
 
     <ImageView
         android:id="@+id/ivFreeze"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_marginTop="56dp"
+        android:layout_height="400dp"
+        android:layout_marginTop="60dp"
         android:scaleType="fitXY"
         android:visibility="gone" />
 
@@ -22,37 +22,64 @@
         android:id="@+id/grid"
         android:layout_width="match_parent"
         android:layout_height="400dp"
-        android:layout_marginTop="56dp"
+        android:layout_marginTop="60dp"
         android:visibility="gone" />
 
-    <HorizontalScrollView
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="56dp"
+        android:layout_height="60dp"
         android:layout_gravity="top"
-        android:scrollbars="none">
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:orientation="horizontal"
-            android:paddingLeft="6dp"
-            android:paddingRight="6dp">
-            <TextView android:id="@+id/tvFlash" style="@style/Top" />
-            <TextView android:id="@+id/tvTimer" style="@style/Top" />
-            <TextView android:id="@+id/tvHdr" style="@style/Top" />
-            <TextView android:id="@+id/tvNr" style="@style/Top" />
-            <TextView android:id="@+id/tvAi" style="@style/Top" />
-            <TextView android:id="@+id/tvTele" style="@style/Top" />
-            <TextView android:id="@+id/tvEnh" style="@style/Top" />
-            <TextView android:id="@+id/tvGrid" style="@style/Top" />
-            <TextView android:id="@+id/tvFilter" style="@style/Top" />
-            <TextView android:id="@+id/tvRes" style="@style/Top" />
-            <TextView android:id="@+id/tvPhone" style="@style/Top" />
-            <TextView android:id="@+id/tvFps" style="@style/Top" />
-            <TextView android:id="@+id/tvStab" style="@style/Top" />
-            <TextView android:id="@+id/tvQual" style="@style/Top" />
-            <TextView android:id="@+id/tvInfo" style="@style/Top" />
-        </LinearLayout>
-    </HorizontalScrollView>
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp">
+        <com.portraitcam.IconView
+            android:id="@+id/icSettings"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1" />
+        <com.portraitcam.IconView
+            android:id="@+id/icFlash"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1" />
+        <com.portraitcam.IconView
+            android:id="@+id/icTimer"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1" />
+        <com.portraitcam.IconView
+            android:id="@+id/icRatio"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1" />
+        <com.portraitcam.IconView
+            android:id="@+id/icGrid"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1" />
+        <com.portraitcam.IconView
+            android:id="@+id/icFilter"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvJobs"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginLeft="14dp"
+        android:layout_marginTop="68dp"
+        android:background="@drawable/pill_bg"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/tvCount"
@@ -64,25 +91,15 @@
         android:visibility="gone" />
 
     <TextView
-        android:id="@+id/tvJobs"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="62dp"
-        android:layout_marginRight="8dp"
-        android:background="@drawable/pill_bg"
-        android:padding="8dp"
-        android:textColor="#FFD60A"
-        android:textSize="12sp"
-        android:visibility="gone" />
-
-    <TextView
         android:id="@+id/tvBusy"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:background="#AA000000"
-        android:padding="16dp"
+        android:background="@drawable/pill_bg"
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
         android:textColor="#FFFFFF"
         android:visibility="gone" />
 
@@ -92,67 +109,7 @@
         android:layout_gravity="bottom"
         android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingBottom="24dp">
-
-        <LinearLayout
-            android:id="@+id/detailRow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-            <TextView
-                android:layout_width="60dp"
-                android:layout_height="wrap_content"
-                android:text="Detail"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
-            <SeekBar
-                android:id="@+id/detailSeek"
-                android:layout_width="220dp"
-                android:layout_height="wrap_content"
-                android:max="100"
-                android:progress="30" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/brightRow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-            <TextView
-                android:layout_width="60dp"
-                android:layout_height="wrap_content"
-                android:text="Bright"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
-            <SeekBar
-                android:id="@+id/brightSeek"
-                android:layout_width="220dp"
-                android:layout_height="wrap_content"
-                android:max="100"
-                android:progress="0" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/beautyRow"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-            <TextView
-                android:layout_width="60dp"
-                android:layout_height="wrap_content"
-                android:text="Beauty"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
-            <SeekBar
-                android:id="@+id/beautySeek"
-                android:layout_width="220dp"
-                android:layout_height="wrap_content"
-                android:max="100"
-                android:progress="0" />
-        </LinearLayout>
+        android:paddingBottom="22dp">
 
         <LinearLayout
             android:id="@+id/blurRow"
@@ -162,14 +119,15 @@
             android:orientation="horizontal"
             android:visibility="gone">
             <TextView
-                android:layout_width="60dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_marginRight="8dp"
                 android:text="Blur"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
             <SeekBar
                 android:id="@+id/blurSeek"
-                android:layout_width="220dp"
+                android:layout_width="230dp"
                 android:layout_height="wrap_content"
                 android:max="100"
                 android:progress="40" />
@@ -192,44 +150,159 @@
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="8dp"
             android:orientation="horizontal">
             <TextView android:id="@+id/tvNight" style="@style/Mode" android:text="NIGHT" />
             <TextView android:id="@+id/tvPhoto" style="@style/Mode" android:text="PHOTO" />
             <TextView android:id="@+id/tvPortrait" style="@style/Mode" android:text="PORTRAIT" />
-            <TextView android:id="@+id/tvVideo" style="@style/Mode" android:text="VIDEO" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="8dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingLeft="40dp"
-            android:paddingRight="40dp">
+            android:paddingLeft="44dp"
+            android:paddingRight="44dp">
             <ImageView
                 android:id="@+id/gallery"
                 android:layout_width="54dp"
                 android:layout_height="54dp"
-                android:background="@drawable/thumb_bg"
+                android:background="@drawable/thumb_circle"
                 android:scaleType="centerCrop" />
             <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
             <View
                 android:id="@+id/shutter"
-                android:layout_width="76dp"
-                android:layout_height="76dp"
+                android:layout_width="78dp"
+                android:layout_height="78dp"
                 android:background="@drawable/shutter" />
             <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
-            <TextView
-                android:id="@+id/flip"
+            <com.portraitcam.IconView
+                android:id="@+id/icFlip"
                 android:layout_width="54dp"
                 android:layout_height="54dp"
-                android:background="@drawable/chip_bg"
-                android:gravity="center"
-                android:text="⟲"
-                android:textColor="#FFFFFF"
-                android:textSize="28sp" />
+                android:background="@drawable/chip_bg" />
         </LinearLayout>
     </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/sheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#AA000000"
+        android:clickable="true"
+        android:visibility="gone">
+        <LinearLayout
+            android:id="@+id/panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:background="@drawable/sheet_bg"
+            android:clickable="true"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Camera settings"
+                    android:textColor="#FFFFFF"
+                    android:textSize="19sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/tvClose"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:gravity="center"
+                    android:text="✕"
+                    android:textColor="#FFFFFF"
+                    android:textSize="20sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:layout_width="78dp"
+                    android:layout_height="wrap_content"
+                    android:text="Brightness"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp" />
+                <SeekBar
+                    android:id="@+id/brightSeek"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="100"
+                    android:progress="0" />
+            </LinearLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:layout_width="78dp"
+                    android:layout_height="wrap_content"
+                    android:text="Detail"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp" />
+                <SeekBar
+                    android:id="@+id/detailSeek"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="100"
+                    android:progress="40" />
+            </LinearLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <TextView
+                    android:layout_width="78dp"
+                    android:layout_height="wrap_content"
+                    android:text="Face smooth"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp" />
+                <SeekBar
+                    android:id="@+id/beautySeek"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="100"
+                    android:progress="0" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+                <TextView android:id="@+id/tvHdr" style="@style/SheetChip" />
+                <TextView android:id="@+id/tvNr" style="@style/SheetChip" />
+                <TextView android:id="@+id/tvAi" style="@style/SheetChip" />
+                <TextView android:id="@+id/tvTele" style="@style/SheetChip" />
+            </LinearLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <TextView android:id="@+id/tvInfo" style="@style/SheetChip" />
+                <TextView android:id="@+id/tvEnh" style="@style/SheetChip" />
+                <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="2" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 </FrameLayout>
