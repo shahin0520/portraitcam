@@ -557,7 +557,7 @@ class MainActivity : AppCompatActivity() {
                 merge = 1
             } else if (zoom > 1.4f && zoomEngine == 1) {
                 // সুপার-রেজোলিউশন জুম: অনেক ছবি, হাতের কাঁপুনি কাজে লাগানো
-                evs = List(if (nrMode == 2) 10 else 8) { 0 }
+                evs = List(if (nrMode == 2) 8 else 6) { 0 }
                 merge = 3
             } else if (dark) {
                 evs = List(4) { 0 }

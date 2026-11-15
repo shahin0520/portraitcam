@@ -58,6 +58,29 @@ class Merged(val px: IntArray, val w: Int, val h: Int) {
 object Pipeline {
 
     @Volatile var note: String = ""
+
+    private val pool = java.util.concurrent.Executors.newFixedThreadPool(
+        Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+    ) { rr -> Thread(rr).apply { isDaemon = true } }
+
+    // কাজ কয়েকটা অংশে ভাগ করে সবগুলো প্রসেসরে একসাথে চালানো (প্রসেসিং অনেক দ্রুত হয়)
+    private fun parallelBands(n: Int, minChunk: Int = 64, body: (Int, Int) -> Unit) {
+        val nt = min(Runtime.getRuntime().availableProcessors().coerceIn(2, 8), max(1, n / minChunk))
+        if (nt <= 1) {
+            body(0, n)
+            return
+        }
+        val chunk = (n + nt - 1) / nt
+        val tasks = ArrayList<java.util.concurrent.Callable<Unit>>()
+        var st = 0
+        while (st < n) {
+            val a = st
+            val b = min(n, st + chunk)
+            tasks.add(java.util.concurrent.Callable { body(a, b) })
+            st += chunk
+        }
+        for (f in pool.invokeAll(tasks)) f.get()
+    }
     @Volatile var diag: String = ""
 
     private val segmenter by lazy {
@@ -114,6 +137,7 @@ object Pipeline {
     }
 
     fun run(shots: List<Shot>, p: Params, sr: SuperRes?, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
+        val t0 = System.currentTimeMillis()
         progress("ফ্রেম মেলানো হচ্ছে…")
         // সবচেয়ে ধারালো ফ্রেম (বড় JPEG) আগে, ঝাপসা ফ্রেম বাদ
         var shotsX = shots
@@ -177,7 +201,7 @@ object Pipeline {
             rb.recycle()
             rotatedEarly = true
         }
-        val upLeft = up / m.scale
+        val upLeft = (if (m.scale > 1f) min(up, m.scale) else up) / m.scale
         if (upLeft > 1.04f) {
             val nw = max(2, (mw * upLeft).toInt() and 1.inv())
             val nh = max(2, (mh * upLeft).toInt() and 1.inv())
@@ -253,6 +277,7 @@ object Pipeline {
             beautify(out, p.beauty)
         }
         if (p.filter > 0) applyFilter(out, p.filter)
+        diag = diag + String.format(java.util.Locale.US, " | সময় %.0fs", (System.currentTimeMillis() - t0) / 1000f)
         return Pair(out, noPerson)
     }
 
@@ -525,12 +550,14 @@ object Pipeline {
             val s = t * t * (3f - 2f * t)
             ((t * 0.8f + s * 0.2f) * 255f).toInt().coerceIn(0, 255)
         }
+        val gainF = gain
+        parallelBands(h, 32) { y0, y1 ->
         val bil = Bil(w, h, gw, gh)
-        for (y in 0 until h) {
+        for (y in y0 until y1) {
             bil.row(y)
             val row = y * w
             for (x in 0 until w) {
-                val g = bil.at(gain, x)
+                val g = bil.at(gainF, x)
                 val p = px[row + x]
                 var r = lut[(((p shr 16) and 255) * g).toInt().coerceIn(0, 255)]
                 var gr = lut[(((p shr 8) and 255) * g).toInt().coerceIn(0, 255)]
@@ -541,6 +568,7 @@ object Pipeline {
                 bl = (l + (((bl - l) * 276) shr 8)).coerceIn(0, 255)
                 px[row + x] = (0xFF shl 24) or (r shl 16) or (gr shl 8) or bl
             }
+        }
         }
     }
 
@@ -609,7 +637,7 @@ object Pipeline {
             for (v in conf) sum += v
             if (sum / (mw * mh) < 0.02f) return null
 
-            val gs = 1536f / max(src.width, src.height)
+            val gs = 1280f / max(src.width, src.height)
             val gw = max(16, (src.width * gs).toInt())
             val gh = max(16, (src.height * gs).toInt())
             val pArr = FloatArray(gw * gh)
@@ -634,7 +662,7 @@ object Pipeline {
             val q = guidedFilter(guide, pArr, gw, gh, 8, 0.001f)
             val out = IntArray(gw * gh)
             for (i in out.indices) {
-                val t = smooth01((q[i] - 0.45f) / 0.25f)
+                val t = smooth01((q[i] - 0.5f) / 0.25f)
                 out[i] = (t * 255f).toInt() shl 24
             }
             val mb = Bitmap.createBitmap(gw, gh, Bitmap.Config.ARGB_8888)
@@ -792,6 +820,107 @@ object Pipeline {
         return out
     }
 
+    // মানুষের জায়গাটা আশেপাশের আসল ব্যাকগ্রাউন্ডের রঙে ভরাট (push-pull), মানুষের রঙ কখনো ব্যাকগ্রাউন্ডে ঢোকে না
+    private class Lv(val w: Int, val h: Int) {
+        val r = FloatArray(w * h)
+        val g = FloatArray(w * h)
+        val b = FloatArray(w * h)
+        val a = FloatArray(w * h)
+    }
+
+    private fun fillBg(px: IntArray, wt: IntArray, w: Int, h: Int): IntArray {
+        val l0 = Lv(w, h)
+        var mr = 0f
+        var mg = 0f
+        var mb = 0f
+        for (i in 0 until w * h) {
+            val p = px[i]
+            l0.a[i] = wt[i] / 255f
+            l0.r[i] = ((p shr 16) and 255).toFloat()
+            l0.g[i] = ((p shr 8) and 255).toFloat()
+            l0.b[i] = (p and 255).toFloat()
+            mr += l0.r[i]; mg += l0.g[i]; mb += l0.b[i]
+        }
+        val n0 = (w * h).toFloat()
+        mr /= n0; mg /= n0; mb /= n0
+        val levels = ArrayList<Lv>()
+        levels.add(l0)
+        var cur = l0
+        while (cur.w > 4 && cur.h > 4) {
+            val nw = (cur.w + 1) / 2
+            val nh = (cur.h + 1) / 2
+            val nx = Lv(nw, nh)
+            for (y in 0 until nh) for (x in 0 until nw) {
+                var sr = 0f
+                var sg = 0f
+                var sb = 0f
+                var sa = 0f
+                for (dy in 0..1) for (dx in 0..1) {
+                    val xx = min(cur.w - 1, 2 * x + dx)
+                    val yy = min(cur.h - 1, 2 * y + dy)
+                    val k = yy * cur.w + xx
+                    val a = cur.a[k]
+                    sr += cur.r[k] * a; sg += cur.g[k] * a; sb += cur.b[k] * a; sa += a
+                }
+                val o = y * nw + x
+                if (sa > 1e-4f) { nx.r[o] = sr / sa; nx.g[o] = sg / sa; nx.b[o] = sb / sa }
+                nx.a[o] = min(1f, sa)
+            }
+            levels.add(nx)
+            cur = nx
+        }
+        val top = levels[levels.size - 1]
+        var fr = FloatArray(top.w * top.h)
+        var fg = FloatArray(top.w * top.h)
+        var fb = FloatArray(top.w * top.h)
+        for (i in fr.indices) {
+            val a = top.a[i]
+            fr[i] = top.r[i] * a + mr * (1f - a)
+            fg[i] = top.g[i] * a + mg * (1f - a)
+            fb[i] = top.b[i] * a + mb * (1f - a)
+        }
+        for (li in levels.size - 2 downTo 0) {
+            val lv = levels[li]
+            val up = levels[li + 1]
+            val nr = FloatArray(lv.w * lv.h)
+            val ng = FloatArray(lv.w * lv.h)
+            val nb = FloatArray(lv.w * lv.h)
+            for (y in 0 until lv.h) {
+                val uy = ((y + 0.5f) / 2f - 0.5f).coerceIn(0f, up.h - 1f)
+                val y0 = min(uy.toInt(), up.h - 1)
+                val y1 = min(y0 + 1, up.h - 1)
+                val ty = uy - y0
+                for (x in 0 until lv.w) {
+                    val ux = ((x + 0.5f) / 2f - 0.5f).coerceIn(0f, up.w - 1f)
+                    val x0 = min(ux.toInt(), up.w - 1)
+                    val x1 = min(x0 + 1, up.w - 1)
+                    val tx = ux - x0
+                    val i00 = y0 * up.w + x0
+                    val i10 = y0 * up.w + x1
+                    val i01 = y1 * up.w + x0
+                    val i11 = y1 * up.w + x1
+                    val cr = (fr[i00] * (1f - tx) + fr[i10] * tx) * (1f - ty) + (fr[i01] * (1f - tx) + fr[i11] * tx) * ty
+                    val cg = (fg[i00] * (1f - tx) + fg[i10] * tx) * (1f - ty) + (fg[i01] * (1f - tx) + fg[i11] * tx) * ty
+                    val cb = (fb[i00] * (1f - tx) + fb[i10] * tx) * (1f - ty) + (fb[i01] * (1f - tx) + fb[i11] * tx) * ty
+                    val k = y * lv.w + x
+                    val a = lv.a[k]
+                    nr[k] = a * lv.r[k] + (1f - a) * cr
+                    ng[k] = a * lv.g[k] + (1f - a) * cg
+                    nb[k] = a * lv.b[k] + (1f - a) * cb
+                }
+            }
+            fr = nr
+            fg = ng
+            fb = nb
+        }
+        val out = IntArray(w * h)
+        for (i in out.indices) {
+            out[i] = (0xFF shl 24) or (fr[i].toInt().coerceIn(0, 255) shl 16) or
+                (fg[i].toInt().coerceIn(0, 255) shl 8) or fb[i].toInt().coerceIn(0, 255)
+        }
+        return out
+    }
+
     // শুধু ব্যাকগ্রাউন্ডের পিক্সেল দিয়ে ব্লার (মানুষের রঙ ছড়ায় না)
     private fun discBlurW(px: IntArray, wt: IntArray, w: Int, h: Int, rad: Int): IntArray {
         val out = IntArray(w * h)
@@ -894,8 +1023,9 @@ object Pipeline {
             tp[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
         val rad = max(2, (3 + (level * 0.12f).toInt()) * 2 / 3)
-        val strongT = discBlurW(tp, wbg, tw, th, rad)
-        val mildT = discBlurW(tp, wbg, tw, th, max(1, rad / 2))
+        val filled = fillBg(tp, wbg, tw, th)
+        val strongT = discBlur(filled, tw, th, rad)
+        val mildT = discBlur(filled, tw, th, max(1, rad / 2))
         val sb = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
         sb.setPixels(strongT, 0, tw, 0, 0, tw, th)
         val strongBmp = Bitmap.createScaledBitmap(sb, sw, sh, true)
@@ -1171,7 +1301,8 @@ object Pipeline {
         if (k < 0.02f) return 0f
         val gamma = 1f / (1f + k * 0.9f)
         val lut = IntArray(256) { (255f * (it / 255f).pow(gamma)).toInt().coerceIn(0, 255) }
-        for (i in px.indices) {
+        parallelBands(px.size, 200000) { a0, a1 ->
+        for (i in a0 until a1) {
             val p = px[i]
             val r = (p shr 16) and 255
             val g = (p shr 8) and 255
@@ -1186,6 +1317,7 @@ object Pipeline {
             val ng = min(255, (g * f).toInt())
             val nb = min(255, (b * f).toInt())
             px[i] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+        }
         }
         return k
     }
@@ -1340,83 +1472,90 @@ object Pipeline {
         val ch = h / 2
         val cb = IntArray(cw * ch)
         val cr = IntArray(cw * ch)
-        for (y in 0 until ch) for (x in 0 until cw) {
-            var sb = 0
-            var sr = 0
-            for (dy in 0..1) for (dx in 0..1) {
-                val p = px[(2 * y + dy) * w + 2 * x + dx]
-                val yy = lum(p)
-                sb += (p and 255) - yy
-                sr += ((p shr 16) and 255) - yy
+        parallelBands(ch, 32) { y0, y1 ->
+            for (y in y0 until y1) for (x in 0 until cw) {
+                var sb = 0
+                var sr = 0
+                for (dy in 0..1) for (dx in 0..1) {
+                    val p = px[(2 * y + dy) * w + 2 * x + dx]
+                    val yy = lum(p)
+                    sb += (p and 255) - yy
+                    sr += ((p shr 16) and 255) - yy
+                }
+                cb[y * cw + x] = sb shr 2
+                cr[y * cw + x] = sr shr 2
             }
-            cb[y * cw + x] = sb shr 2
-            cr[y * cw + x] = sr shr 2
         }
         val rc = (1 + (s / 2f).toInt()).coerceIn(2, 6)
         blurGray(cb, cw, ch, rc, 2)
         blurGray(cr, cw, ch, rc, 2)
         val wFlat = ((0.35f + 0.55f * min(s / 10f, 1f)) * 256f).toInt()
         val wEdge = (0.3f * 256f).toInt()
-        for (y in 0 until h) {
-            val cy = min(y / 2, ch - 1)
-            val row = y * w
-            for (x in 1 until w - 1) {
-                val i = row + x
-                val p = px[i]
-                val yc = lum(p)
-                val g = abs(lum(px[i + 1]) - lum(px[i - 1]))
-                val wc = if (g > 30) wEdge else wFlat
-                val ci = cy * cw + min(x / 2, cw - 1)
-                val cbo = (p and 255) - yc
-                val cro = ((p shr 16) and 255) - yc
-                val cbn = cbo + (((cb[ci] - cbo) * wc) shr 8)
-                val crn = cro + (((cr[ci] - cro) * wc) shr 8)
-                val r = (yc + crn).coerceIn(0, 255)
-                val b = (yc + cbn).coerceIn(0, 255)
-                val gg = (((yc shl 8) - 77 * r - 29 * b) / 150).coerceIn(0, 255)
-                px[i] = (0xFF shl 24) or (r shl 16) or (gg shl 8) or b
+        parallelBands(h, 32) { y0, y1 ->
+            for (y in y0 until y1) {
+                val cy = min(y / 2, ch - 1)
+                val row = y * w
+                for (x in 1 until w - 1) {
+                    val i = row + x
+                    val p = px[i]
+                    val yc = lum(p)
+                    val g = abs(lum(px[i + 1]) - lum(px[i - 1]))
+                    val wc = if (g > 30) wEdge else wFlat
+                    val ci = cy * cw + min(x / 2, cw - 1)
+                    val cbo = (p and 255) - yc
+                    val cro = ((p shr 16) and 255) - yc
+                    val cbn = cbo + (((cb[ci] - cbo) * wc) shr 8)
+                    val crn = cro + (((cr[ci] - cro) * wc) shr 8)
+                    val r = (yc + crn).coerceIn(0, 255)
+                    val b = (yc + cbn).coerceIn(0, 255)
+                    val gg = (((yc shl 8) - 77 * r - 29 * b) / 150).coerceIn(0, 255)
+                    px[i] = (0xFF shl 24) or (r shl 16) or (gg shl 8) or b
+                }
             }
         }
     }
 
     private fun lumaDenoise(px: IntArray, w: Int, h: Int, s: Float) {
         val thr = (1.6f * s + 1.5f).toInt().coerceIn(3, 22)
-        var prevY = IntArray(w)
-        var curY = IntArray(w)
-        var nextY = IntArray(w)
-        for (x in 0 until w) {
-            curY[x] = lum(px[x])
-            prevY[x] = curY[x]
-        }
-        for (y in 0 until h) {
-            val ny = if (y + 1 < h) y + 1 else y
-            for (x in 0 until w) nextY[x] = lum(px[ny * w + x])
-            val row = y * w
-            for (x in 1 until w - 1) {
-                val yc = curY[x]
-                var sum = yc * 2
-                var n = 2
-                var v = prevY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = prevY[x]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = prevY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = curY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = curY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = nextY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = nextY[x]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                v = nextY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
-                val d = sum / n - yc
-                if (d != 0) {
-                    val p = px[row + x]
-                    val r = (((p shr 16) and 255) + d).coerceIn(0, 255)
-                    val g = (((p shr 8) and 255) + d).coerceIn(0, 255)
-                    val b = ((p and 255) + d).coerceIn(0, 255)
-                    px[row + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                }
+        parallelBands(h, 64) { y0, y1 ->
+            var prevY = IntArray(w)
+            var curY = IntArray(w)
+            var nextY = IntArray(w)
+            val ys = max(0, y0 - 1)
+            for (x in 0 until w) {
+                curY[x] = lum(px[y0 * w + x])
+                prevY[x] = lum(px[ys * w + x])
             }
-            val t = prevY
-            prevY = curY
-            curY = nextY
-            nextY = t
+            for (y in y0 until y1) {
+                val ny = if (y + 1 < h) y + 1 else y
+                for (x in 0 until w) nextY[x] = lum(px[ny * w + x])
+                val row = y * w
+                for (x in 1 until w - 1) {
+                    val yc = curY[x]
+                    var sum = yc * 2
+                    var n = 2
+                    var v = prevY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = prevY[x]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = prevY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = curY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = curY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = nextY[x - 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = nextY[x]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    v = nextY[x + 1]; if (abs(v - yc) <= thr) { sum += v; n++ }
+                    val d = sum / n - yc
+                    if (d != 0) {
+                        val p = px[row + x]
+                        val r = (((p shr 16) and 255) + d).coerceIn(0, 255)
+                        val g = (((p shr 8) and 255) + d).coerceIn(0, 255)
+                        val b = ((p and 255) + d).coerceIn(0, 255)
+                        px[row + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    }
+                }
+                val t = prevY
+                prevY = curY
+                curY = nextY
+                nextY = t
+            }
         }
     }
 
@@ -1427,20 +1566,22 @@ object Pipeline {
         val gh = max(16, h / 8)
         val grid = lumaGrid(px, w, h, gw, gh, 0, 0)
         blurF(grid, gw, gh, 2, 1)
-        val bil = Bil(w, h, gw, gh)
-        for (y in 0 until h) {
-            bil.row(y)
-            val row = y * w
-            for (x in 0 until w) {
-                val p = px[row + x]
-                val r = (p shr 16) and 255
-                val g = (p shr 8) and 255
-                val b = p and 255
-                val yy = (77 * r + 150 * g + 29 * b) shr 8
-                val d = ((yy - bil.at(grid, x)) * k).toInt().coerceIn(-14, 14)
-                if (d != 0) {
-                    px[row + x] = (0xFF shl 24) or ((r + d).coerceIn(0, 255) shl 16) or
-                        ((g + d).coerceIn(0, 255) shl 8) or (b + d).coerceIn(0, 255)
+        parallelBands(h, 32) { y0, y1 ->
+            val bil = Bil(w, h, gw, gh)
+            for (y in y0 until y1) {
+                bil.row(y)
+                val row = y * w
+                for (x in 0 until w) {
+                    val p = px[row + x]
+                    val r = (p shr 16) and 255
+                    val g = (p shr 8) and 255
+                    val b = p and 255
+                    val yy = (77 * r + 150 * g + 29 * b) shr 8
+                    val d = ((yy - bil.at(grid, x)) * k).toInt().coerceIn(-14, 14)
+                    if (d != 0) {
+                        px[row + x] = (0xFF shl 24) or ((r + d).coerceIn(0, 255) shl 16) or
+                            ((g + d).coerceIn(0, 255) shl 8) or (b + d).coerceIn(0, 255)
+                    }
                 }
             }
         }
@@ -1449,37 +1590,39 @@ object Pipeline {
     // ধারালো করা (৩x৩), নয়েজের মাপ অনুযায়ী ছোট দানা বাদ দিয়ে
     private fun sharpen2(px: IntArray, w: Int, h: Int, amt: Float, core: Int) {
         val k = (amt * 256f).toInt()
-        var prev = IntArray(w)
-        var cur = IntArray(w)
-        var next = IntArray(w)
-        System.arraycopy(px, 0, prev, 0, w)
-        System.arraycopy(px, 0, cur, 0, w)
-        for (y in 0 until h) {
-            val ny = if (y + 1 < h) y + 1 else y
-            System.arraycopy(px, ny * w, next, 0, w)
-            val base = y * w
-            for (x in 1 until w - 1) {
-                val c = cur[x]
-                val a1 = prev[x - 1]; val a2 = prev[x]; val a3 = prev[x + 1]
-                val b1 = cur[x - 1]; val b3 = cur[x + 1]
-                val c1 = next[x - 1]; val c2 = next[x]; val c3 = next[x + 1]
-                val ar = (((a1 shr 16) and 255) + ((a2 shr 16) and 255) + ((a3 shr 16) and 255) +
-                    ((b1 shr 16) and 255) + ((b3 shr 16) and 255) +
-                    ((c1 shr 16) and 255) + ((c2 shr 16) and 255) + ((c3 shr 16) and 255)) shr 3
-                val ag = (((a1 shr 8) and 255) + ((a2 shr 8) and 255) + ((a3 shr 8) and 255) +
-                    ((b1 shr 8) and 255) + ((b3 shr 8) and 255) +
-                    ((c1 shr 8) and 255) + ((c2 shr 8) and 255) + ((c3 shr 8) and 255)) shr 3
-                val ab = ((a1 and 255) + (a2 and 255) + (a3 and 255) + (b1 and 255) + (b3 and 255) +
-                    (c1 and 255) + (c2 and 255) + (c3 and 255)) shr 3
-                val nr = sh2((c shr 16) and 255, ar, k, core)
-                val ng = sh2((c shr 8) and 255, ag, k, core)
-                val nb = sh2(c and 255, ab, k, core)
-                px[base + x] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+        parallelBands(h, 64) { y0, y1 ->
+            var prev = IntArray(w)
+            var cur = IntArray(w)
+            var next = IntArray(w)
+            System.arraycopy(px, max(0, y0 - 1) * w, prev, 0, w)
+            System.arraycopy(px, y0 * w, cur, 0, w)
+            for (y in y0 until y1) {
+                val ny = if (y + 1 < h) y + 1 else y
+                System.arraycopy(px, ny * w, next, 0, w)
+                val base = y * w
+                for (x in 1 until w - 1) {
+                    val c = cur[x]
+                    val a1 = prev[x - 1]; val a2 = prev[x]; val a3 = prev[x + 1]
+                    val b1 = cur[x - 1]; val b3 = cur[x + 1]
+                    val c1 = next[x - 1]; val c2 = next[x]; val c3 = next[x + 1]
+                    val ar = (((a1 shr 16) and 255) + ((a2 shr 16) and 255) + ((a3 shr 16) and 255) +
+                        ((b1 shr 16) and 255) + ((b3 shr 16) and 255) +
+                        ((c1 shr 16) and 255) + ((c2 shr 16) and 255) + ((c3 shr 16) and 255)) shr 3
+                    val ag = (((a1 shr 8) and 255) + ((a2 shr 8) and 255) + ((a3 shr 8) and 255) +
+                        ((b1 shr 8) and 255) + ((b3 shr 8) and 255) +
+                        ((c1 shr 8) and 255) + ((c2 shr 8) and 255) + ((c3 shr 8) and 255)) shr 3
+                    val ab = ((a1 and 255) + (a2 and 255) + (a3 and 255) + (b1 and 255) + (b3 and 255) +
+                        (c1 and 255) + (c2 and 255) + (c3 and 255)) shr 3
+                    val nr = sh2((c shr 16) and 255, ar, k, core)
+                    val ng = sh2((c shr 8) and 255, ag, k, core)
+                    val nb = sh2(c and 255, ab, k, core)
+                    px[base + x] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
+                }
+                val t = prev
+                prev = cur
+                cur = next
+                next = t
             }
-            val t = prev
-            prev = cur
-            cur = next
-            next = t
         }
     }
 
@@ -1609,10 +1752,12 @@ object Pipeline {
         accR: FloatArray, accG: FloatArray, accB: FloatArray, accW: FloatArray,
         refL: FloatArray, curL: FloatArray?, ghostThr: Float
     ) {
+        parallelBands(gh, 24) { g0, g1 ->
         for (y in 0 until h) {
             val yy = (y - ty + 0.5f) * g - 0.5f
             val yf = floor(yy)
             val yi = yf.toInt()
+            if (yi + 2 < g0 || yi - 1 >= g1) continue
             val wy = wt[((yy - yf) * q).toInt().coerceIn(0, q - 1)]
             for (x in 0 until w) {
                 val i = y * w + x
@@ -1639,7 +1784,7 @@ object Pipeline {
                 val b = (p and 255).toFloat()
                 for (a in 0 until 4) {
                     val gy = yi - 1 + a
-                    if (gy < 0 || gy >= gh) continue
+                    if (gy < max(0, g0) || gy >= min(gh, g1)) continue
                     val wyv = wy[a]
                     val row = gy * gw
                     for (c in 0 until 4) {
@@ -1654,6 +1799,7 @@ object Pipeline {
                     }
                 }
             }
+        }
         }
     }
 
@@ -1943,40 +2089,44 @@ object Pipeline {
         val tx = makeTaps(w, nw)
         val ty = makeTaps(h, nh)
         val tmp = IntArray(nw * h)
-        for (y in 0 until h) {
-            val row = y * w
-            for (x in 0 until nw) {
-                var r = 0f
-                var g = 0f
-                var b = 0f
-                for (t in 0 until 6) {
-                    val p = src[row + tx.idx[x * 6 + t]]
-                    val wv = tx.wt[x * 6 + t]
-                    r += ((p shr 16) and 255) * wv
-                    g += ((p shr 8) and 255) * wv
-                    b += (p and 255) * wv
+        parallelBands(h, 32) { y0, y1 ->
+            for (y in y0 until y1) {
+                val row = y * w
+                for (x in 0 until nw) {
+                    var r = 0f
+                    var g = 0f
+                    var b = 0f
+                    for (t in 0 until 6) {
+                        val p = src[row + tx.idx[x * 6 + t]]
+                        val wv = tx.wt[x * 6 + t]
+                        r += ((p shr 16) and 255) * wv
+                        g += ((p shr 8) and 255) * wv
+                        b += (p and 255) * wv
+                    }
+                    tmp[y * nw + x] = (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or
+                        (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
                 }
-                tmp[y * nw + x] = (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or
-                    (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
             }
         }
         val out = IntArray(nw * nh)
-        val ro = IntArray(6)
-        for (y in 0 until nh) {
-            for (t in 0 until 6) ro[t] = ty.idx[y * 6 + t] * nw
-            for (x in 0 until nw) {
-                var r = 0f
-                var g = 0f
-                var b = 0f
-                for (t in 0 until 6) {
-                    val p = tmp[ro[t] + x]
-                    val wv = ty.wt[y * 6 + t]
-                    r += ((p shr 16) and 255) * wv
-                    g += ((p shr 8) and 255) * wv
-                    b += (p and 255) * wv
+        parallelBands(nh, 32) { y0, y1 ->
+            val ro = IntArray(6)
+            for (y in y0 until y1) {
+                for (t in 0 until 6) ro[t] = ty.idx[y * 6 + t] * nw
+                for (x in 0 until nw) {
+                    var r = 0f
+                    var g = 0f
+                    var b = 0f
+                    for (t in 0 until 6) {
+                        val p = tmp[ro[t] + x]
+                        val wv = ty.wt[y * 6 + t]
+                        r += ((p shr 16) and 255) * wv
+                        g += ((p shr 8) and 255) * wv
+                        b += (p and 255) * wv
+                    }
+                    out[y * nw + x] = (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or
+                        (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
                 }
-                out[y * nw + x] = (0xFF shl 24) or (r.toInt().coerceIn(0, 255) shl 16) or
-                    (g.toInt().coerceIn(0, 255) shl 8) or b.toInt().coerceIn(0, 255)
             }
         }
         return out
