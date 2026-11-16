@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var jobStatus = ""
     private val main = Handler(Looper.getMainLooper())
     private val sr by lazy { SuperRes(this) }
+    private val depthEst by lazy { DepthEst(this) }
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) { if (provider == null) startCamera() }
@@ -587,7 +588,7 @@ class MainActivity : AppCompatActivity() {
             hdrSingle = hdrWanted && merge != 2,
             night = mode == 0,
             portrait = mode == 2,
-            blur = (blurSeek.progress + (if (teleOn && soft && mode == 2) ((zoom - 1f) * 15f).toInt().coerceAtMost(30) else 0)).coerceAtMost(100),
+            blur = (blurSeek.progress + (if (teleOn && soft && mode == 2) ((zoom - 1f) * 8f).toInt().coerceAtMost(16) else 0)).coerceAtMost(100),
             tele = teleOn,
             beauty = if (mode == 0) 0 else beautySeek.progress,
             filter = filterIdx,
@@ -733,7 +734,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun runProcess(shots: List<Shot>, p: Params) {
         try {
-            val (bmp, noPerson) = Pipeline.run(shots, p, sr) { msg ->
+            val (bmp, noPerson) = Pipeline.run(shots, p, sr, depthEst) { msg ->
                 jobStatus = msg
                 runOnUiThread { updateJobsUi() }
             }

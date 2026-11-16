@@ -136,7 +136,7 @@ object Pipeline {
         )
     }
 
-    fun run(shots: List<Shot>, p: Params, sr: SuperRes?, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
+    fun run(shots: List<Shot>, p: Params, sr: SuperRes?, depthEst: DepthEst?, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
         val t0 = System.currentTimeMillis()
         progress("ফ্রেম মেলানো হচ্ছে…")
         // সবচেয়ে ধারালো ফ্রেম (বড় JPEG) আগে, ঝাপসা ফ্রেম বাদ
@@ -251,6 +251,7 @@ object Pipeline {
         val h = bmp.height
         val mask = if (p.portrait) personMask(bmp) else null
         val noPerson = p.portrait && mask == null
+        val dmap = if (p.portrait && mask != null && depthEst != null) depthEst.estimate(bmp) else null
         var px = IntArray(w * h)
         bmp.getPixels(px, 0, w, 0, 0, w, h)
         bmp.recycle()
@@ -269,8 +270,9 @@ object Pipeline {
         px = IntArray(0)
         if (mask != null) {
             progress("ব্যাকগ্রাউন্ড ব্লার…")
-            val bgScale = if (p.tele && p.softZoom && z > 1.05f) (1f + 0.15f * (z - 1f)).coerceAtMost(1.4f) else 1f
-            out = composite(out, mask, p.blur, bgScale)
+            val bgScale = if (p.tele && p.softZoom && z > 1.05f) (1f + 0.10f * (z - 1f)).coerceAtMost(1.25f) else 1f
+            out = composite(out, mask, p.blur, bgScale, dmap)
+            note = note + (if (dmap != null) " | ডেপথ-ব্লার" else " | সাধারণ ব্লার")
         }
         if (p.beauty > 0) {
             progress("ফেস স্মুদ…")
@@ -768,10 +770,10 @@ object Pipeline {
         return FloatArray(n) { (mA[it] * ig[it] + mB[it]).coerceIn(0f, 1f) }
     }
 
-    private fun composite(base: Bitmap, mask: Bitmap, level: Int, bgScale: Float): Bitmap {
+    private fun composite(base: Bitmap, mask: Bitmap, level: Int, bgScale: Float, depth: FloatArray?): Bitmap {
         val w = base.width
         val h = base.height
-        val bg = blurredBackground(base, mask, level)
+        val bg = if (depth != null) depthBackground(base, mask, level, depth) else blurredBackground(base, mask, level)
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         val full = Rect(0, 0, w, h)
@@ -966,29 +968,122 @@ object Pipeline {
         val out = IntArray(w * h)
         val xs = IntArray(2 * rad + 1)
         for (i in -rad..rad) xs[i + rad] = sqrt((rad * rad - i * i).toDouble()).toInt()
-        for (y in 0 until h) for (x in 0 until w) {
-            var sr = 0
-            var sg = 0
-            var sb = 0
-            var n = 0
-            for (dy in -rad..rad) {
-                val yy = y + dy
-                if (yy < 0 || yy >= h) continue
-                val dm = xs[dy + rad]
-                val xa = max(0, x - dm)
-                val xb = min(w - 1, x + dm)
-                val row = yy * w
-                for (xx in xa..xb) {
-                    val p = px[row + xx]
-                    sr += (p shr 16) and 255
-                    sg += (p shr 8) and 255
-                    sb += p and 255
-                    n++
+        parallelBands(h, 16) { y0, y1 ->
+            for (y in y0 until y1) for (x in 0 until w) {
+                var sr = 0
+                var sg = 0
+                var sb = 0
+                var n = 0
+                for (dy in -rad..rad) {
+                    val yy = y + dy
+                    if (yy < 0 || yy >= h) continue
+                    val dm = xs[dy + rad]
+                    val xa = max(0, x - dm)
+                    val xb = min(w - 1, x + dm)
+                    val row = yy * w
+                    for (xx in xa..xb) {
+                        val p = px[row + xx]
+                        sr += (p shr 16) and 255
+                        sg += (p shr 8) and 255
+                        sb += p and 255
+                        n++
+                    }
                 }
+                out[y * w + x] = (0xFF shl 24) or ((sr / n) shl 16) or ((sg / n) shl 8) or (sb / n)
             }
-            out[y * w + x] = (0xFF shl 24) or ((sr / n) shl 16) or ((sg / n) shl 8) or (sb / n)
         }
         return out
+    }
+
+    private fun resizeFloat(src: FloatArray, sw: Int, sh: Int, dw: Int, dh: Int): FloatArray {
+        val out = FloatArray(dw * dh)
+        for (y in 0 until dh) {
+            val fy = ((y + 0.5f) * sh / dh - 0.5f).coerceIn(0f, sh - 1f)
+            val y0 = min(fy.toInt(), sh - 2)
+            val ty = fy - y0
+            for (x in 0 until dw) {
+                val fx = ((x + 0.5f) * sw / dw - 0.5f).coerceIn(0f, sw - 1f)
+                val x0 = min(fx.toInt(), sw - 2)
+                val tx = fx - x0
+                val a = src[y0 * sw + x0] * (1f - tx) + src[y0 * sw + x0 + 1] * tx
+                val b = src[(y0 + 1) * sw + x0] * (1f - tx) + src[(y0 + 1) * sw + x0 + 1] * tx
+                out[y * dw + x] = a * (1f - ty) + b * ty
+            }
+        }
+        return out
+    }
+
+    // আসল ক্যামেরার মতো ব্লার: ফোকাস-তলের (মানুষের) কাছাকাছি জিনিস কম ঝাপসা, যত দূরে তত বেশি
+    private fun depthBackground(base: Bitmap, mask: Bitmap, level: Int, depth: FloatArray): Bitmap {
+        val s = 900f / max(base.width, base.height)
+        val sw = max(12, (base.width * s).toInt())
+        val sh = max(12, (base.height * s).toInt())
+        val small = Bitmap.createScaledBitmap(base, sw, sh, true)
+        val tw = max(8, sw / 3)
+        val th = max(8, sh / 3)
+        val third = Bitmap.createScaledBitmap(small, tw, th, true)
+        small.recycle()
+        val tp = IntArray(tw * th)
+        third.getPixels(tp, 0, tw, 0, 0, tw, th)
+        third.recycle()
+        val mt = Bitmap.createScaledBitmap(mask, tw, th, true)
+        val mtp = IntArray(tw * th)
+        mt.getPixels(mtp, 0, tw, 0, 0, tw, th)
+        mt.recycle()
+        val wbg = IntArray(tw * th) { 255 - min(255, (mtp[it] ushr 24) * 4) }
+        val guide = FloatArray(tw * th) { lum(tp[it]) / 255f }
+
+        // ডেপথ ম্যাপ ছবির কিনারায় বসানো
+        val dUp = resizeFloat(depth, 256, 256, tw, th)
+        val dRef = guidedFilter(guide, dUp, tw, th, 4, 0.001f)
+
+        // মানুষের ডেপথ (মধ্যমান)
+        val samples = ArrayList<Float>()
+        var i0 = 0
+        while (i0 < tw * th) {
+            if ((mtp[i0] ushr 24) > 230) samples.add(dRef[i0])
+            i0 += 3
+        }
+        val ds = if (samples.size > 20) { samples.sort(); samples[samples.size / 2] } else 0.8f
+
+        // উজ্জ্বল আলো সামান্য বাড়ানো, তারপর মানুষের জায়গা ব্যাকগ্রাউন্ডের রঙে ভরা
+        for (i in tp.indices) {
+            val p = tp[i]
+            var r = (p shr 16) and 255
+            var g = (p shr 8) and 255
+            var b = p and 255
+            if (r > 238) r = min(255, r + (r - 238) * 2)
+            if (g > 238) g = min(255, g + (g - 238) * 2)
+            if (b > 238) b = min(255, b + (b - 238) * 2)
+            tp[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        val filled = fillBg(tp, wbg, tw, th)
+
+        // কয়েকটা ঝাপসা স্তর, প্রতিটা পিক্সেলে দূরত্ব অনুযায়ী মিশিয়ে নেওয়া
+        val radMax = max(3f, (3 + level * 0.12f) * 2f / 3f * 1.25f)
+        val k = 5
+        val layers = ArrayList<IntArray>()
+        layers.add(filled)
+        for (j in 1..k) layers.add(discBlur(filled, tw, th, max(1, Math.round(radMax * j / k))))
+        val outPx = IntArray(tw * th)
+        for (i in outPx.indices) {
+            val diff = abs(dRef[i] - ds)
+            val r01 = ((diff - 0.06f) / 0.5f).coerceIn(0f, 1f)
+            val pos = r01 * k
+            val lo = min(pos.toInt(), k - 1)
+            val f = pos - lo
+            val a = layers[lo][i]
+            val b = layers[lo + 1][i]
+            val nr = (((a shr 16) and 255) * (1f - f) + ((b shr 16) and 255) * f).toInt()
+            val ng = (((a shr 8) and 255) * (1f - f) + ((b shr 8) and 255) * f).toInt()
+            val nb = ((a and 255) * (1f - f) + (b and 255) * f).toInt()
+            outPx[i] = (0xFF shl 24) or (nr.coerceIn(0, 255) shl 16) or (ng.coerceIn(0, 255) shl 8) or nb.coerceIn(0, 255)
+        }
+        val tb = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        tb.setPixels(outPx, 0, tw, 0, 0, tw, th)
+        val res = Bitmap.createScaledBitmap(tb, sw, sh, true)
+        tb.recycle()
+        return res
     }
 
     // লেন্সের মতো গোল ব্লার: মানুষের কাছে হালকা, দূরে বেশি। মানুষের রঙ কখনো ব্যাকগ্রাউন্ডে মেশে না

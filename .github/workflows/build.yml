@@ -27,6 +27,7 @@ jobs:
             curl -sL -o work/fast.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
             python tools/convert.py work/general.pth 32 app/src/main/assets/sr_hq.tflite
             python tools/convert.py work/fast.pth 16 app/src/main/assets/sr_fast.tflite
+            curl -sL -o app/src/main/assets/depth.tflite https://github.com/isl-org/MiDaS/releases/download/v2_1/model_opt.tflite
             ls -la app/src/main/assets
           ) 2>&1 | tee conv.log
       - name: Accept licenses
