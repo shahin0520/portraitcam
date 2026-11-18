@@ -4,11 +4,17 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/preview"
+    <FrameLayout
+        android:id="@+id/previewHolder"
         android:layout_width="match_parent"
         android:layout_height="400dp"
-        android:layout_marginTop="60dp" />
+        android:layout_marginTop="60dp"
+        android:clipChildren="true">
+        <androidx.camera.view.PreviewView
+            android:id="@+id/preview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
 
     <ImageView
         android:id="@+id/ivFreeze"
@@ -144,7 +150,9 @@
             <TextView android:id="@+id/z1" style="@style/Chip" android:text="1x" />
             <TextView android:id="@+id/z2" style="@style/Chip" android:text="2x" />
             <TextView android:id="@+id/z3" style="@style/Chip" android:text="3x" />
-            <TextView android:id="@+id/z5" style="@style/Chip" android:text="5x" />
+            <TextView android:id="@+id/z5" style="@style/Chip" android:text="10x" />
+            <TextView android:id="@+id/z30" style="@style/Chip" android:text="30x" />
+            <TextView android:id="@+id/z100" style="@style/Chip" android:text="100x" />
         </LinearLayout>
 
         <LinearLayout

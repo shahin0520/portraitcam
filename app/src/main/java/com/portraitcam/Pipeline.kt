@@ -141,9 +141,9 @@ object Pipeline {
         progress("ফ্রেম মেলানো হচ্ছে…")
         // সবচেয়ে ধারালো ফ্রেম (বড় JPEG) আগে, ঝাপসা ফ্রেম বাদ
         var shotsX = shots
-        if ((p.merge == 1 || p.merge == 3) && shots.size >= 3) {
+        if ((p.merge == 1 || p.merge >= 3) && shots.size >= 3) {
             val ordered = shots.sortedByDescending { it.jpeg.size }
-            val keep = ordered.filter { it.jpeg.size >= ordered[0].jpeg.size * (if (p.merge == 3) 0.75 else 0.85) }
+            val keep = ordered.filter { it.jpeg.size >= ordered[0].jpeg.size * (if (p.merge >= 3) 0.75 else 0.85) }
             shotsX = if (keep.size >= 2) keep else ordered.take(2)
         }
         val first = shotsX[0]
@@ -152,8 +152,8 @@ object Pipeline {
         val sh0 = dec0.height
         dec0.recycle()
         val z = if (p.softZoom) p.zoom else 1f
-        val cw = max(64, (sw0 / z).toInt() and 1.inv())
-        val ch = max(64, (sh0 / z).toInt() and 1.inv())
+        val cw = max(32, (sw0 / z).toInt() and 1.inv())
+        val ch = max(32, (sh0 / z).toInt() and 1.inv())
         val x0 = ((sw0 - cw) / 2) and 1.inv()
         val y0 = ((sh0 - ch) / 2) and 1.inv()
         val rect = Rect(x0, y0, x0 + cw, y0 + ch)
@@ -169,8 +169,10 @@ object Pipeline {
         while (si < m.px.size) { msum += lum(m.px[si]); mcnt++; si += 37 }
         val meanL = if (mcnt > 0) (msum / mcnt).toInt() else 120
         val kb = brighten(m.px, m.w, m.h, p.bright, meanL)
-        val up = if (p.softZoom) min(z, 5f) else 1f
-        val useAi = p.ai == 2 && sr != null && up > 1.01f && m.scale == 1f
+        val zz = z
+        val up = if (zz > 1.01f) min(zz, max(5f, 1600f / max(m.w, m.h))) else 1f
+        val hiZoom = zz > 3.5f && p.ai != 0 && sr != null
+        val useAi = p.ai == 2 && sr != null && up > 1.01f && m.scale == 1f && !hiZoom
         val sigma0 = estimateSigma(m.px, m.w, m.h)
         var sigma = sigma0 * (1f + p.nrBoost * 2f).coerceIn(0.5f, 1.8f)
         if (useAi) sigma *= 0.6f
@@ -202,7 +204,41 @@ object Pipeline {
             rotatedEarly = true
         }
         val upLeft = (if (m.scale > 1f) min(up, m.scale) else up) / m.scale
-        if (upLeft > 1.04f) {
+        if (hiZoom) {
+            // সুপার জুম (৩.৫x থেকে ১০০x): ছবি মিলিয়ে সুপার-রেজোলিউশন, তারপর AI দিয়ে ধাপে ধাপে বড় করা
+            var cx = px0
+            var cw2 = mw
+            var ch2 = mh
+            var passes = 0
+            while (max(cw2, ch2) < 1500 && passes < 3) {
+                val rr = aiUpscale(cx, cw2, ch2, 2, sr!!, 120, progress) ?: break
+                cx = rr.px
+                cw2 = rr.w
+                ch2 = rr.h
+                passes++
+            }
+            if (passes == 0 && m.scale == 1f) {
+                progress("ছবি বড় করা হচ্ছে…")
+                val nw = max(2, (mw * up).toInt() and 1.inv())
+                val nh = max(2, (mh * up).toInt() and 1.inv())
+                cx = lanczos(cx, mw, mh, nw, nh)
+                cw2 = nw
+                ch2 = nh
+            }
+            if (max(cw2, ch2) > 4000) {
+                val sc = 4000f / max(cw2, ch2)
+                val nw = max(2, (cw2 * sc).toInt() and 1.inv())
+                val nh = max(2, (ch2 * sc).toInt() and 1.inv())
+                cx = lanczos(cx, cw2, ch2, nw, nh)
+                cw2 = nw
+                ch2 = nh
+            }
+            px0 = cx
+            mw = cw2
+            mh = ch2
+            aiDone = passes > 0
+            note = "সুপার জুম ${String.format(java.util.Locale.US, "%.0f", zz)}x (${m.used}টা ছবি মিলিয়ে" + (if (passes > 0) ", AI × $passes" else "") + ")"
+        } else if (upLeft > 1.04f) {
             val nw = max(2, (mw * upLeft).toInt() and 1.inv())
             val nh = max(2, (mh * upLeft).toInt() and 1.inv())
             if (useAi) {
@@ -451,7 +487,8 @@ object Pipeline {
 
     private fun merge(shots: List<Shot>, rect: Rect, sample: Int, mode: Int, ghost: Int): Merged {
         if (mode == 2) return mergeHdr(shots, rect, sample)
-        if (mode == 3) return superResolve(shots, rect, sample)
+        if (mode == 3) return superResolve(shots, rect, sample, 0f)
+        if (mode == 4) return superResolve(shots, rect, sample, 1f)
         val ref = decode(shots[0], rect, sample)
         if (shots.size == 1 || mode == 0) return ref
         val w = ref.w
@@ -822,6 +859,30 @@ object Pipeline {
         return out
     }
 
+    // মানুষের কিনারার রঙ যাতে ব্যাকগ্রাউন্ডে না ঢোকে, তাই মাস্ক একটু বাড়িয়ে নিই
+    private fun dilatedWeights(mtp: IntArray, w: Int, h: Int, r: Int): IntArray {
+        val a = IntArray(w * h) { mtp[it] ushr 24 }
+        val tmp = IntArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            var m = 0
+            for (dx in -r..r) {
+                val v = a[y * w + (x + dx).coerceIn(0, w - 1)]
+                if (v > m) m = v
+            }
+            tmp[y * w + x] = m
+        }
+        val out = IntArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            var m = 0
+            for (dy in -r..r) {
+                val v = tmp[(y + dy).coerceIn(0, h - 1) * w + x]
+                if (v > m) m = v
+            }
+            out[y * w + x] = 255 - min(255, m * 8)
+        }
+        return out
+    }
+
     // মানুষের জায়গাটা আশেপাশের আসল ব্যাকগ্রাউন্ডের রঙে ভরাট (push-pull), মানুষের রঙ কখনো ব্যাকগ্রাউন্ডে ঢোকে না
     private class Lv(val w: Int, val h: Int) {
         val r = FloatArray(w * h)
@@ -1030,7 +1091,7 @@ object Pipeline {
         val mtp = IntArray(tw * th)
         mt.getPixels(mtp, 0, tw, 0, 0, tw, th)
         mt.recycle()
-        val wbg = IntArray(tw * th) { 255 - min(255, (mtp[it] ushr 24) * 4) }
+        val wbg = dilatedWeights(mtp, tw, th, 2)
         val guide = FloatArray(tw * th) { lum(tp[it]) / 255f }
 
         // ডেপথ ম্যাপ ছবির কিনারায় বসানো
@@ -1104,7 +1165,7 @@ object Pipeline {
         val mtp = IntArray(tw * th)
         mt.getPixels(mtp, 0, tw, 0, 0, tw, th)
         mt.recycle()
-        val wbg = IntArray(tw * th) { 255 - min(255, (mtp[it] ushr 24) * 4) }
+        val wbg = dilatedWeights(mtp, tw, th, 2)
 
         // হালকা আলো-ফুল (শুধু খুব উজ্জ্বল অংশে)
         for (i in tp.indices) {
@@ -1898,21 +1959,50 @@ object Pipeline {
         }
     }
 
-    private fun superResolve(shots: List<Shot>, rect: Rect, sample: Int): Merged {
-        val ref = decode(shots[0], rect, sample)
-        val w = ref.w
-        val h = ref.h
-        if (shots.size < 3 || w < 96 || h < 96) return ref
-        val g = min(2f, sqrt(8_000_000f / (w.toFloat() * h)))
-        if (g < 1.15f) return merge(shots, rect, sample, 1, 100)
-        val gw = (w * g).toInt()
-        val gh = (h * g).toInt()
+    private fun window(px: IntArray, w: Int, h: Int, x0: Int, y0: Int, cw: Int, ch: Int): IntArray {
+        val out = IntArray(cw * ch)
+        for (y in 0 until ch) {
+            val sy = (y0 + y).coerceIn(0, h - 1)
+            for (x in 0 until cw) out[y * cw + x] = px[sy * w + (x0 + x).coerceIn(0, w - 1)]
+        }
+        return out
+    }
+
+    private fun superResolve(shots: List<Shot>, rect: Rect, sample: Int, forceG: Float): Merged {
+        if (shots.size < 3) return decode(shots[0], rect, sample)
+        val dec = BitmapRegionDecoder.newInstance(shots[0].jpeg, 0, shots[0].jpeg.size, false)
+        val fw = dec.width
+        val fh = dec.height
+        dec.recycle()
+        val cw = rect.width() / sample
+        val ch = rect.height() / sample
+        // অনেক বড় জুমে ক্রপ খুব ছোট, তাই ছবি মেলাতে মাঝের বড় অংশ ব্যবহার করি
+        var roi = rect
+        if (sample == 1 && rect.width() < fw / 3.2f) {
+            val rw = (fw / 3.2f).toInt() and 1.inv()
+            val rh = (fh / 3.2f).toInt() and 1.inv()
+            val rx = ((fw - rw) / 2) and 1.inv()
+            val ry = ((fh - rh) / 2) and 1.inv()
+            roi = Rect(rx, ry, rx + rw, ry + rh)
+        }
+        val ref = decode(shots[0], roi, sample)
+        val w1 = ref.w
+        val h1 = ref.h
+        if (w1 < 96 || h1 < 96 || cw < 16 || ch < 16) return decode(shots[0], rect, sample)
+        val cx0 = (rect.left - roi.left) / sample
+        val cy0 = (rect.top - roi.top) / sample
+        val refCrop = window(ref.px, w1, h1, cx0, cy0, cw, ch)
+        val g = if (forceG > 0f) forceG else min(2f, sqrt(8_000_000f / (cw.toFloat() * ch)))
+        if (forceG == 0f && g < 1.15f) return merge(shots, rect, sample, 1, 100)
+        val gw = max(2, (cw * g).toInt())
+        val gh = max(2, (ch * g).toInt())
         val refL = lumaF(ref.px)
-        val refS = box3(refL, w, h)
-        val cf = if (min(w, h) >= 600) 8 else 4
+        val refS = box3(refL, w1, h1)
+        val refCropL = lumaF(refCrop)
+        val cf = if (min(w1, h1) >= 600) 8 else 4
         val ff = max(2, cf / 2)
-        val rg = gradSmall(ref.px, w, h, cf)
-        val rg2 = gradSmall(ref.px, w, h, ff)
+        val rg = gradSmall(ref.px, w1, h1, cf)
+        val rg2 = gradSmall(ref.px, w1, h1, ff)
         val accR = FloatArray(gw * gh)
         val accG = FloatArray(gw * gh)
         val accB = FloatArray(gw * gh)
@@ -1925,24 +2015,31 @@ object Pipeline {
                 exp(-(d * d) / (2f * sigma * sigma))
             }
         }
-        splatFrame(ref.px, w, h, gw, gh, g, 0f, 0f, wt, q, accR, accG, accB, accW, refL, null, 0f)
+        splatFrame(refCrop, cw, ch, gw, gh, g, 0f, 0f, wt, q, accR, accG, accB, accW, refCropL, null, 0f)
         var used = 1
         for (k in 1 until shots.size) {
-            val cur = try { decode(shots[k], rect, sample) } catch (e: Throwable) { continue }
-            if (cur.w != w || cur.h != h) continue
-            val cg = gradSmall(cur.px, w, h, cf)
+            val cur = try { decode(shots[k], roi, sample) } catch (e: Throwable) { continue }
+            if (cur.w != w1 || cur.h != h1) continue
+            val cg = gradSmall(cur.px, w1, h1, cf)
             val s1 = findShift(rg, cg, 16, 0, 0)
             val ratio = cf / ff
-            val cg2 = gradSmall(cur.px, w, h, ff)
+            val cg2 = gradSmall(cur.px, w1, h1, ff)
             val s2 = findShift(rg2, cg2, 3, s1[0] * ratio, s1[1] * ratio)
-            val curL = lumaF(cur.px)
-            val curS = box3(curL, w, h)
-            val r = refineShift(refS, curS, w, h, (s2[0] * ff).toFloat(), (s2[1] * ff).toFloat())
-            if (r[2] > 14f || abs(r[0]) > 30f || abs(r[1]) > 30f) continue   // ছবি মেলেনি (নড়ে গেছে)
-            splatFrame(cur.px, w, h, gw, gh, g, r[0], r[1], wt, q, accR, accG, accB, accW, refL, curL, 40f)
+            val curS = box3(lumaF(cur.px), w1, h1)
+            val r = refineShift(refS, curS, w1, h1, (s2[0] * ff).toFloat(), (s2[1] * ff).toFloat())
+            if (r[2] > 14f || abs(r[0]) > 40f || abs(r[1]) > 40f) continue   // ছবি মেলেনি (নড়ে গেছে)
+            val ix = Math.round(r[0])
+            val iy = Math.round(r[1])
+            val curCrop = window(cur.px, w1, h1, cx0 + ix, cy0 + iy, cw, ch)
+            val curCropL = lumaF(curCrop)
+            splatFrame(curCrop, cw, ch, gw, gh, g, r[0] - ix, r[1] - iy, wt, q, accR, accG, accB, accW, refCropL, curCropL, 30f)
             used++
         }
-        if (used < 2) return ref
+        if (used < 2) {
+            val one = Merged(refCrop, cw, ch)
+            one.used = 1
+            return one
+        }
         val out = IntArray(gw * gh)
         for (gy in 0 until gh) {
             val ry = (gy + 0.5f) / g - 0.5f
@@ -1956,7 +2053,7 @@ object Pipeline {
                         (accB[k] / wv + 0.5f).toInt().coerceIn(0, 255)
                 } else {
                     val rx = (gx + 0.5f) / g - 0.5f
-                    val base = sampleBil(ref.px, w, h, rx, ry)
+                    val base = sampleBil(refCrop, cw, ch, rx, ry)
                     if (wv > 0.05f) {
                         val a = wv / 0.6f
                         val sr = (accR[k] / wv).coerceIn(0f, 255f)

@@ -58,6 +58,8 @@ class MainActivity : AppCompatActivity() {
 
     // ---- views ----
     private lateinit var preview: PreviewView
+    private lateinit var previewHolder: View
+    private var vz = 1f                 // ভার্চুয়াল জুম (১x থেকে ১০০x)
     private lateinit var ivFreeze: ImageView
     private lateinit var grid: View
     private lateinit var icSettings: IconView
@@ -155,6 +157,7 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
         preview = findViewById(R.id.preview)
+        previewHolder = findViewById(R.id.previewHolder)
         preview.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         preview.scaleType = PreviewView.ScaleType.FIT_START
         ivFreeze = findViewById(R.id.ivFreeze)
@@ -202,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         // প্রিভিউ ৩:৪, গোল কোনা (S24-এর মতো)
         preview.post {
             val h4 = preview.width * 4 / 3
-            for (v in listOf<View>(preview, ivFreeze, grid)) {
+            for (v in listOf<View>(previewHolder, ivFreeze, grid)) {
                 val lp = v.layoutParams
                 lp.height = h4
                 v.layoutParams = lp
@@ -213,8 +216,8 @@ class MainActivity : AppCompatActivity() {
                     outline.setRoundRect(0, 0, view.width, view.height, rad)
                 }
             }
-            preview.outlineProvider = op
-            preview.clipToOutline = true
+            previewHolder.outlineProvider = op
+            previewHolder.clipToOutline = true
             ivFreeze.outlineProvider = op
             ivFreeze.clipToOutline = true
         }
@@ -224,7 +227,9 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.z1) to 1f,
             findViewById<TextView>(R.id.z2) to 2f,
             findViewById<TextView>(R.id.z3) to 3f,
-            findViewById<TextView>(R.id.z5) to 5f
+            findViewById<TextView>(R.id.z5) to 10f,
+            findViewById<TextView>(R.id.z30) to 30f,
+            findViewById<TextView>(R.id.z100) to 100f
         )
         chips.forEach { (v, r) -> v.setOnClickListener { setZoom(r) } }
 
@@ -281,8 +286,7 @@ class MainActivity : AppCompatActivity() {
 
         val sgd = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
-                val z = camera?.cameraInfo?.zoomState?.value ?: return true
-                setZoom(z.zoomRatio * d.scaleFactor)
+                setZoom(vz * d.scaleFactor)
                 return true
             }
         })
@@ -373,6 +377,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fmt(r: Float): String {
+        if (r >= 10f) return "${r.toInt()}x"
         val t = String.format(Locale.US, "%.1f", r)
         return (if (t.endsWith(".0")) t.dropLast(2) else t) + "x"
     }
@@ -450,23 +455,33 @@ class MainActivity : AppCompatActivity() {
         preview.post {
             val z = camera?.cameraInfo?.zoomState?.value
             val mn = z?.minZoomRatio ?: 1f
-            val mx = z?.maxZoomRatio ?: 1f
+            vz = 1f
+            preview.scaleX = 1f
+            preview.scaleY = 1f
             chips.forEach { (v, r) ->
-                v.visibility = when {
-                    r < 1f -> if (mn < 0.9f) View.VISIBLE else View.GONE
-                    r == 1f -> View.VISIBLE
-                    else -> if (mx >= r) View.VISIBLE else View.GONE
-                }
+                v.visibility = if (r < 1f && mn >= 0.9f) View.GONE else View.VISIBLE
             }
             updateZoomUi(1f)
         }
     }
 
+    // কামেরার নিজের জুম যতদূর যায় ততদূর, এরপর প্রিভিউ ডিজিটালি বড় (১০০x পর্যন্ত)
+    private fun applyZoom() {
+        val z = camera?.cameraInfo?.zoomState?.value
+        val mn = z?.minZoomRatio ?: 1f
+        val mx = z?.maxZoomRatio ?: 1f
+        val camZ = vz.coerceIn(mn, mx)
+        camera?.cameraControl?.setZoomRatio(camZ)
+        val extra = if (vz > camZ) vz / camZ else 1f
+        preview.scaleX = extra
+        preview.scaleY = extra
+        updateZoomUi(vz)
+    }
+
     private fun setZoom(r: Float) {
-        val z = camera?.cameraInfo?.zoomState?.value ?: return
-        val v = r.coerceIn(z.minZoomRatio, z.maxZoomRatio)
-        camera?.cameraControl?.setZoomRatio(v)
-        updateZoomUi(v)
+        val z = camera?.cameraInfo?.zoomState?.value
+        vz = r.coerceIn(z?.minZoomRatio ?: 1f, 100f)
+        applyZoom()
     }
 
     // ---------- ছবি তোলা ----------
@@ -537,7 +552,7 @@ class MainActivity : AppCompatActivity() {
         shutter.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).withEndAction {
             shutter.animate().scaleX(1f).scaleY(1f).setDuration(80)
         }
-        val zoom = cam.cameraInfo.zoomState.value?.zoomRatio ?: 1f
+        val zoom = vz
         val exp = cam.cameraInfo.exposureState
         val step = try { exp.exposureCompensationStep.toFloat() } catch (e: Throwable) { 0f }
         val rng = exp.exposureCompensationRange
@@ -556,10 +571,18 @@ class MainActivity : AppCompatActivity() {
             if (mode == 0) {
                 evs = List(6) { oneEv }
                 merge = 1
-            } else if (zoom > 1.4f && zoomEngine == 1) {
+            } else if (zoom > 1.4f && zoomEngine != 0) {
                 // সুপার-রেজোলিউশন জুম: অনেক ছবি, হাতের কাঁপুনি কাজে লাগানো
-                evs = List(if (nrMode == 2) 8 else 6) { 0 }
-                merge = 3
+                if (zoom > 3.5f) {
+                    evs = List(if (nrMode == 2) 12 else 10) { 0 }
+                    merge = 3
+                } else if (zoomEngine == 1) {
+                    evs = List(if (nrMode == 2) 8 else 6) { 0 }
+                    merge = 3
+                } else {
+                    evs = List(6) { 0 }
+                    merge = 4
+                }
             } else if (dark) {
                 evs = List(4) { 0 }
                 merge = 1
@@ -612,9 +635,7 @@ class MainActivity : AppCompatActivity() {
 
         fun restore() {
             try { cam.cameraControl.setExposureCompensationIndex(0) } catch (e: Throwable) { }
-            if (soft) {
-                try { cam.cameraControl.setZoomRatio(zoom) } catch (e: Throwable) { }
-            }
+            if (soft) applyZoom()
             ivFreeze.visibility = View.GONE
         }
 
