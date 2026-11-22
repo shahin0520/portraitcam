@@ -1317,6 +1317,11 @@ object Pipeline {
                 2 -> { r *= 1.07f; g *= 1.02f; b *= 0.92f } // Warm
                 3 -> { r *= 0.92f; b *= 1.08f }             // Cool
                 4 -> { val m = (l - 128f) * 1.1f + 128f; r = m; g = m; b = m } // Mono
+                6 -> { // S25 look: হালকা ভিভিড
+                    r = (l + (r - l) * 1.16f - 128f) * 1.04f + 128f + 3f
+                    g = (l + (g - l) * 1.16f - 128f) * 1.04f + 128f + 3f
+                    b = (l + (b - l) * 1.16f - 128f) * 1.04f + 128f + 3f
+                }
                 5 -> { // Film
                     r = (l * 0.5f + r * 0.5f) * 1.06f + 10f
                     g = (l * 0.5f + g * 0.5f) * 0.98f + 6f
@@ -1575,13 +1580,15 @@ object Pipeline {
 
     private fun blurT1(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
         val div = 2 * r + 1
-        for (y in 0 until h) {
-            val row = y * w
-            var s = 0
-            for (i in -r..r) s += src[row + i.coerceIn(0, w - 1)]
-            for (x in 0 until w) {
-                dst[x * h + y] = s / div
-                s += src[row + (x + r + 1).coerceAtMost(w - 1)] - src[row + (x - r).coerceAtLeast(0)]
+        parallelBands(h, 32) { y0, y1 ->
+            for (y in y0 until y1) {
+                val row = y * w
+                var s = 0
+                for (i in -r..r) s += src[row + i.coerceIn(0, w - 1)]
+                for (x in 0 until w) {
+                    dst[x * h + y] = s / div
+                    s += src[row + (x + r + 1).coerceAtMost(w - 1)] - src[row + (x - r).coerceAtLeast(0)]
+                }
             }
         }
     }
@@ -2096,13 +2103,15 @@ object Pipeline {
 
     private fun blurTF(src: FloatArray, dst: FloatArray, w: Int, h: Int, r: Int) {
         val div = (2 * r + 1).toFloat()
-        for (y in 0 until h) {
-            val row = y * w
-            var s = 0f
-            for (i in -r..r) s += src[row + i.coerceIn(0, w - 1)]
-            for (x in 0 until w) {
-                dst[x * h + y] = s / div
-                s += src[row + (x + r + 1).coerceAtMost(w - 1)] - src[row + (x - r).coerceAtLeast(0)]
+        parallelBands(h, 32) { y0, y1 ->
+            for (y in y0 until y1) {
+                val row = y * w
+                var s = 0f
+                for (i in -r..r) s += src[row + i.coerceIn(0, w - 1)]
+                for (x in 0 until w) {
+                    dst[x * h + y] = s / div
+                    s += src[row + (x + r + 1).coerceAtMost(w - 1)] - src[row + (x - r).coerceAtLeast(0)]
+                }
             }
         }
     }
@@ -2343,22 +2352,26 @@ object Pipeline {
 
     private fun blurT(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
         val div = 2 * r + 1
-        for (y in 0 until h) {
-            val row = y * w
-            var sr = 0
-            var sg = 0
-            var sb = 0
-            for (i in -r..r) {
-                val p = src[row + i.coerceIn(0, w - 1)]
-                sr += (p shr 16) and 255; sg += (p shr 8) and 255; sb += p and 255
-            }
-            for (x in 0 until w) {
-                dst[x * h + y] = (0xFF shl 24) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
-                val a = src[row + (x + r + 1).coerceAtMost(w - 1)]
-                val d = src[row + (x - r).coerceAtLeast(0)]
-                sr += ((a shr 16) and 255) - ((d shr 16) and 255)
-                sg += ((a shr 8) and 255) - ((d shr 8) and 255)
-                sb += (a and 255) - (d and 255)
+        parallelBands(h, 32) { y0, y1 ->
+            for (y in y0 until y1) {
+                val row = y * w
+                var sr = 0
+                var sg = 0
+                var sb = 0
+                for (i in -r..r) {
+                    val p = src[row + i.coerceIn(0, w - 1)]
+                    sr += (p shr 16) and 255
+                    sg += (p shr 8) and 255
+                    sb += p and 255
+                }
+                for (x in 0 until w) {
+                    dst[x * h + y] = (0xFF shl 24) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
+                    val a = src[row + (x + r + 1).coerceAtMost(w - 1)]
+                    val d = src[row + (x - r).coerceAtLeast(0)]
+                    sr += ((a shr 16) and 255) - ((d shr 16) and 255)
+                    sg += ((a shr 8) and 255) - ((d shr 8) and 255)
+                    sb += (a and 255) - (d and 255)
+                }
             }
         }
     }

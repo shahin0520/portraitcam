@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
+import android.graphics.Rect
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Outline
@@ -45,6 +47,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
@@ -54,7 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     private val YELLOW = 0xFFFFD60A.toInt()
     private val DIM = 0x99FFFFFF.toInt()
-    private val filterNames = listOf("Original", "Vivid", "Warm", "Cool", "Mono", "Film")
+    private val filterNames = listOf("Original", "Vivid", "Warm", "Cool", "Mono", "Film", "S25")
 
     // ---- views ----
     private lateinit var preview: PreviewView
@@ -75,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTele: TextView
     private lateinit var tvInfo: TextView
     private lateinit var tvEnh: TextView
+    private lateinit var tvLook: TextView
     private lateinit var tvClose: TextView
     private lateinit var tvBusy: TextView
     private lateinit var tvCount: TextView
@@ -111,6 +115,8 @@ class MainActivity : AppCompatActivity() {
     private var lastUri: Uri? = null
 
     private val camExec = Executors.newSingleThreadExecutor()
+    private val quickExec = Executors.newSingleThreadExecutor()
+    private var look = 0                 // 0 NATURAL, 1 S25, 2 CRISP
     private val procExec = Executors.newSingleThreadExecutor()
     private val miscExec = Executors.newSingleThreadExecutor()
     private val jobsPending = AtomicInteger(0)
@@ -175,6 +181,7 @@ class MainActivity : AppCompatActivity() {
         tvTele = findViewById(R.id.tvTele)
         tvInfo = findViewById(R.id.tvInfo)
         tvEnh = findViewById(R.id.tvEnh)
+        tvLook = findViewById(R.id.tvLook)
         tvClose = findViewById(R.id.tvClose)
         tvBusy = findViewById(R.id.tvBusy)
         tvCount = findViewById(R.id.tvCount)
@@ -268,6 +275,7 @@ class MainActivity : AppCompatActivity() {
         tvNr.setOnClickListener { nrMode = (nrMode + 1) % 3; updateTop() }
         tvAi.setOnClickListener { zoomEngine = (zoomEngine + 1) % 3; updateTop() }
         tvTele.setOnClickListener { teleOn = !teleOn; updateTop() }
+        tvLook.setOnClickListener { look = (look + 1) % 3; applyLook(); updateTop() }
         tvInfo.setOnClickListener { procMode = (procMode + 1) % 3; updateTop() }
         tvEnh.setOnClickListener {
             sheet.visibility = View.GONE
@@ -340,9 +348,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateModeUi() {
-        tvNight.setTextColor(if (mode == 0) YELLOW else DIM)
-        tvPhoto.setTextColor(if (mode == 1) YELLOW else DIM)
-        tvPortrait.setTextColor(if (mode == 2) YELLOW else DIM)
+        tvNight.setTextColor(if (mode == 0) Color.WHITE else DIM)
+        tvPhoto.setTextColor(if (mode == 1) Color.WHITE else DIM)
+        tvPortrait.setTextColor(if (mode == 2) Color.WHITE else DIM)
+        tvNight.setBackgroundResource(if (mode == 0) R.drawable.mode_active else 0)
+        tvPhoto.setBackgroundResource(if (mode == 1) R.drawable.mode_active else 0)
+        tvPortrait.setBackgroundResource(if (mode == 2) R.drawable.mode_active else 0)
         blurRow.visibility = if (mode == 2) View.VISIBLE else View.GONE
     }
 
@@ -367,13 +378,23 @@ class MainActivity : AppCompatActivity() {
         tvTele.text = "TELE LOOK\n" + (if (teleOn) "ON" else "OFF")
         tvInfo.text = "ORIGINAL\n" + listOf("OFF", "SAVE", "ONLY")[procMode]
         tvEnh.text = "ENHANCE\nGALLERY"
+        tvLook.text = "LOOK\n" + listOf("NATURAL", "S25", "CRISP")[look]
         tint(tvHdr, hdrMode != 0)
         tint(tvNr, nrMode != 0)
         tint(tvAi, zoomEngine != 0)
         tint(tvTele, teleOn)
         tint(tvInfo, procMode != 0)
         tint(tvEnh, false)
+        tint(tvLook, look != 0)
         grid.visibility = if (gridOn) View.VISIBLE else View.GONE
+    }
+
+    private fun applyLook() {
+        when (look) {
+            0 -> { brightSeek.progress = 0; detailSeek.progress = 40; filterIdx = 0 }
+            1 -> { brightSeek.progress = 12; detailSeek.progress = 55; filterIdx = 6 }
+            else -> { brightSeek.progress = 0; detailSeek.progress = 80; filterIdx = 0 }
+        }
     }
 
     private fun fmt(r: Float): String {
@@ -394,7 +415,7 @@ class MainActivity : AppCompatActivity() {
         chips.forEach { (v, r) ->
             val on = v === best
             v.setBackgroundResource(if (on) R.drawable.zoom_active else 0)
-            v.setTextColor(if (on) Color.BLACK else Color.WHITE)
+            v.setTextColor(Color.WHITE)
             v.text = if (on) fmt(ratio) else if (r < 1f) ".5" else "${r.toInt()}x"
             v.textSize = if (on) 14f else 13f
         }
@@ -750,16 +771,103 @@ class MainActivity : AppCompatActivity() {
     private fun submitJob(shots: List<Shot>, p: Params) {
         jobsPending.incrementAndGet()
         updateJobsUi()
-        procExec.execute { runProcess(shots, p) }
+        val quick = java.util.concurrent.CompletableFuture<Uri?>()
+        // ১) ছবি সাথে সাথেই গ্যালারিতে (দ্রুত সংস্করণ)
+        quickExec.execute {
+            try {
+                val pr = quickSave(shots[0], p)
+                quick.complete(pr.first)
+                runOnUiThread {
+                    lastUri = pr.first
+                    if (pr.second != null) gallery.setImageBitmap(pr.second)
+                    Toast.makeText(this, "ছবি সেভ হয়েছে — পেছনে উন্নত করা হচ্ছে…", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Throwable) {
+                quick.complete(null)
+            }
+        }
+        // ২) পেছনে সেরা মানের প্রসেস, শেষে ওই ফাইলের জায়গায় বসবে
+        procExec.execute { runProcess(shots, p, quick) }
     }
 
-    private fun runProcess(shots: List<Shot>, p: Params) {
+    private fun quickSave(s: Shot, p: Params): Pair<Uri, Bitmap?> {
+        val name = "IMG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
+        val v = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PortraitCam")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
+            ?: throw IllegalStateException("সেভ করা যায়নি")
+        var thumb: Bitmap? = null
+        if (!p.softZoom && !p.front) {
+            contentResolver.openOutputStream(uri)!!.use { it.write(s.jpeg) }
+            try {
+                contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
+                    val ex = ExifInterface(pfd.fileDescriptor)
+                    ex.setAttribute(ExifInterface.TAG_ORIENTATION, when (s.rot) { 90 -> "6"; 180 -> "3"; 270 -> "8"; else -> "1" })
+                    ex.saveAttributes()
+                }
+            } catch (e: Throwable) { }
+            try {
+                val o = BitmapFactory.Options().apply { inSampleSize = 16 }
+                var tb = BitmapFactory.decodeByteArray(s.jpeg, 0, s.jpeg.size, o)
+                if (tb != null && s.rot != 0) {
+                    val mx = Matrix().apply { postRotate(s.rot.toFloat()) }
+                    tb = Bitmap.createBitmap(tb, 0, 0, tb.width, tb.height, mx, true)
+                }
+                thumb = tb
+            } catch (e: Throwable) { }
+        } else {
+            val dec = BitmapRegionDecoder.newInstance(s.jpeg, 0, s.jpeg.size, false)
+            val fw = dec.width
+            val fh = dec.height
+            val z = if (p.softZoom) p.zoom else 1f
+            val cw = max(32, (fw / z).toInt() and 1.inv())
+            val ch = max(32, (fh / z).toInt() and 1.inv())
+            val x0 = ((fw - cw) / 2) and 1.inv()
+            val y0 = ((fh - ch) / 2) and 1.inv()
+            var sample = 1
+            while ((cw / sample).toLong() * (ch / sample) > 6_000_000L) sample *= 2
+            val o = BitmapFactory.Options().apply { inSampleSize = sample }
+            var bmp = dec.decodeRegion(Rect(x0, y0, x0 + cw, y0 + ch), o)
+            dec.recycle()
+            val mx = Matrix().apply {
+                postRotate(s.rot.toFloat())
+                if (p.front) postScale(-1f, 1f)
+            }
+            val rot = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mx, true)
+            if (rot !== bmp) bmp.recycle()
+            bmp = rot
+            val ls = max(bmp.width, bmp.height)
+            if (z > 1.05f && ls < 2400) {
+                val sc = 2400f / ls
+                val up = Bitmap.createScaledBitmap(bmp, (bmp.width * sc).toInt(), (bmp.height * sc).toInt(), true)
+                bmp.recycle()
+                bmp = up
+            }
+            contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            thumb = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
+            bmp.recycle()
+        }
+        v.clear()
+        v.put(MediaStore.Images.Media.IS_PENDING, 0)
+        contentResolver.update(uri, v, null, null)
+        return Pair(uri, thumb)
+    }
+
+    private fun runProcess(shots: List<Shot>, p: Params, quick: java.util.concurrent.CompletableFuture<Uri?>) {
         try {
             val (bmp, noPerson) = Pipeline.run(shots, p, sr, depthEst) { msg ->
                 jobStatus = msg
                 runOnUiThread { updateJobsUi() }
             }
-            val uri = save(bmp)
+            val quickUri = try { quick.get(30, TimeUnit.SECONDS) } catch (e: Throwable) { null }
+            val uri = if (quickUri != null) {
+                contentResolver.openOutputStream(quickUri, "wt")!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 96, it) }
+                quickUri
+            } else save(bmp)
             val th = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
             bmp.recycle()
             val note = Pipeline.note
@@ -769,7 +877,7 @@ class MainActivity : AppCompatActivity() {
                 gallery.setImageBitmap(th)
                 Toast.makeText(
                     this,
-                    (if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ ছবি সেভ হয়েছে" else "ছবি সেভ হয়েছে") +
+                    (if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ প্রসেস হয়েছে" else "✔ ছবি উন্নত হয়েছে") +
                         (if (note.isNotEmpty()) "\n" + note else "") +
                         (if (diag.isNotEmpty()) "\n" + diag else ""),
                     Toast.LENGTH_LONG
@@ -867,7 +975,7 @@ class MainActivity : AppCompatActivity() {
         }
         val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
             ?: throw IllegalStateException("সেভ করা যায়নি")
-        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 98, it) }
+        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 96, it) }
         v.clear()
         v.put(MediaStore.Images.Media.IS_PENDING, 0)
         contentResolver.update(uri, v, null, null)

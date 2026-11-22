@@ -143,7 +143,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:background="@drawable/pill_bg"
+            android:background="@drawable/pill_glass"
             android:orientation="horizontal"
             android:padding="4dp">
             <TextView android:id="@+id/z05" style="@style/Chip" android:text=".5" />
@@ -178,6 +178,7 @@
                 android:layout_width="54dp"
                 android:layout_height="54dp"
                 android:background="@drawable/thumb_circle"
+                android:padding="3dp"
                 android:scaleType="centerCrop" />
             <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
             <View
@@ -309,7 +310,8 @@
                 android:orientation="horizontal">
                 <TextView android:id="@+id/tvInfo" style="@style/SheetChip" />
                 <TextView android:id="@+id/tvEnh" style="@style/SheetChip" />
-                <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="2" />
+                <TextView android:id="@+id/tvLook" style="@style/SheetChip" />
+                <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
             </LinearLayout>
         </LinearLayout>
     </FrameLayout>
