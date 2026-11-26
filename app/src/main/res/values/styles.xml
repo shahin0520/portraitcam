@@ -5,8 +5,8 @@
         <item name="android:windowBackground">#000000</item>
     </style>
     <style name="Chip">
-        <item name="android:layout_width">43dp</item>
-        <item name="android:layout_height">43dp</item>
+        <item name="android:layout_width">48dp</item>
+        <item name="android:layout_height">42dp</item>
         <item name="android:gravity">center</item>
         <item name="android:textColor">#FFFFFF</item>
         <item name="android:textSize">13sp</item>
@@ -14,10 +14,10 @@
     <style name="Mode">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:paddingLeft">14dp</item>
-        <item name="android:paddingRight">14dp</item>
-        <item name="android:paddingTop">8dp</item>
-        <item name="android:paddingBottom">8dp</item>
+        <item name="android:paddingLeft">18dp</item>
+        <item name="android:paddingRight">18dp</item>
+        <item name="android:paddingTop">10dp</item>
+        <item name="android:paddingBottom">10dp</item>
         <item name="android:textColor">#FFFFFF</item>
         <item name="android:textSize">14sp</item>
         <item name="android:textStyle">bold</item>
