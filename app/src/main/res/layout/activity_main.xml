@@ -7,8 +7,8 @@
     <FrameLayout
         android:id="@+id/previewHolder"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_marginTop="0dp"
+        android:layout_height="400dp"
+        android:layout_marginTop="60dp"
         android:clipChildren="true">
         <androidx.camera.view.PreviewView
             android:id="@+id/preview"
@@ -19,16 +19,16 @@
     <ImageView
         android:id="@+id/ivFreeze"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_marginTop="0dp"
+        android:layout_height="400dp"
+        android:layout_marginTop="60dp"
         android:scaleType="fitXY"
         android:visibility="gone" />
 
     <com.portraitcam.GridView
         android:id="@+id/grid"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_marginTop="0dp"
+        android:layout_height="400dp"
+        android:layout_marginTop="60dp"
         android:visibility="gone" />
 
     <LinearLayout
