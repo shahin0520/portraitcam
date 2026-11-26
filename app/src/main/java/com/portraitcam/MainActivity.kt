@@ -237,7 +237,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.z1) to 1f,
             findViewById<TextView>(R.id.z2) to 2f,
             findViewById<TextView>(R.id.z3) to 3f,
-            findViewById<TextView>(R.id.z5) to 10f,
+            findViewById<TextView>(R.id.z5) to 5f,
             findViewById<TextView>(R.id.z30) to 30f,
             findViewById<TextView>(R.id.z100) to 100f
         )
