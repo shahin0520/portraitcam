@@ -311,7 +311,7 @@
                 <TextView android:id="@+id/tvInfo" style="@style/SheetChip" />
                 <TextView android:id="@+id/tvEnh" style="@style/SheetChip" />
                 <TextView android:id="@+id/tvLook" style="@style/SheetChip" />
-                <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+                <TextView android:id="@+id/tvSpeed" style="@style/SheetChip" />
             </LinearLayout>
         </LinearLayout>
     </FrameLayout>

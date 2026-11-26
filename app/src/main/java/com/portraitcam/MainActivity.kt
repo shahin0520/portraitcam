@@ -79,6 +79,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvInfo: TextView
     private lateinit var tvEnh: TextView
     private lateinit var tvLook: TextView
+    private lateinit var tvSpeed: TextView
     private lateinit var tvClose: TextView
     private lateinit var tvBusy: TextView
     private lateinit var tvCount: TextView
@@ -116,7 +117,8 @@ class MainActivity : AppCompatActivity() {
 
     private val camExec = Executors.newSingleThreadExecutor()
     private val quickExec = Executors.newSingleThreadExecutor()
-    private var look = 0                 // 0 NATURAL, 1 S25, 2 CRISP
+    private var look = 1                 // 0 NATURAL, 1 S25, 2 CRISP
+    private var speed = 0                // 0 FAST (১টা ছবি, দ্রুত), 1 QUALITY (কয়েকটা ছবি মিলিয়ে)
     private val procExec = Executors.newSingleThreadExecutor()
     private val miscExec = Executors.newSingleThreadExecutor()
     private val jobsPending = AtomicInteger(0)
@@ -182,6 +184,7 @@ class MainActivity : AppCompatActivity() {
         tvInfo = findViewById(R.id.tvInfo)
         tvEnh = findViewById(R.id.tvEnh)
         tvLook = findViewById(R.id.tvLook)
+        tvSpeed = findViewById(R.id.tvSpeed)
         tvClose = findViewById(R.id.tvClose)
         tvBusy = findViewById(R.id.tvBusy)
         tvCount = findViewById(R.id.tvCount)
@@ -276,6 +279,7 @@ class MainActivity : AppCompatActivity() {
         tvAi.setOnClickListener { zoomEngine = (zoomEngine + 1) % 3; updateTop() }
         tvTele.setOnClickListener { teleOn = !teleOn; updateTop() }
         tvLook.setOnClickListener { look = (look + 1) % 3; applyLook(); updateTop() }
+        tvSpeed.setOnClickListener { speed = 1 - speed; updateTop(); bind() }
         tvInfo.setOnClickListener { procMode = (procMode + 1) % 3; updateTop() }
         tvEnh.setOnClickListener {
             sheet.visibility = View.GONE
@@ -321,6 +325,7 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
+        applyLook()
         updateTop()
         updateModeUi()
         miscExec.execute { Pipeline.warmUp() }
@@ -379,6 +384,7 @@ class MainActivity : AppCompatActivity() {
         tvInfo.text = "ORIGINAL\n" + listOf("OFF", "SAVE", "ONLY")[procMode]
         tvEnh.text = "ENHANCE\nGALLERY"
         tvLook.text = "LOOK\n" + listOf("NATURAL", "S25", "CRISP")[look]
+        tvSpeed.text = "SPEED\n" + (if (speed == 0) "FAST" else "QUALITY")
         tint(tvHdr, hdrMode != 0)
         tint(tvNr, nrMode != 0)
         tint(tvAi, zoomEngine != 0)
@@ -386,6 +392,7 @@ class MainActivity : AppCompatActivity() {
         tint(tvInfo, procMode != 0)
         tint(tvEnh, false)
         tint(tvLook, look != 0)
+        tint(tvSpeed, speed == 1)
         grid.visibility = if (gridOn) View.VISIBLE else View.GONE
     }
 
@@ -457,7 +464,7 @@ class MainActivity : AppCompatActivity() {
             val pv = Preview.Builder().build().also { it.setSurfaceProvider(preview.surfaceProvider) }
             val ic = ImageCapture.Builder()
                 .setFlashMode(flash)
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setCaptureMode(if (speed == 0) ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY else ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
                         .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
@@ -588,22 +595,25 @@ class MainActivity : AppCompatActivity() {
 
         var evs = listOf(0)
         var merge = 0
+        val fast = speed == 0
         if (!flashUsed) {
             if (mode == 0) {
-                evs = List(6) { oneEv }
+                evs = List(if (fast) 4 else 6) { oneEv }
                 merge = 1
             } else if (zoom > 1.4f && zoomEngine != 0) {
-                // সুপার-রেজোলিউশন জুম: অনেক ছবি, হাতের কাঁপুনি কাজে লাগানো
+                // সুপার-রেজোলিউশন জুম: কয়েকটা ছবি, হাতের কাঁপুনি কাজে লাগানো
                 if (zoom > 3.5f) {
-                    evs = List(if (nrMode == 2) 12 else 10) { 0 }
+                    evs = List(if (fast) (if (nrMode == 2) 8 else 6) else (if (nrMode == 2) 12 else 10)) { 0 }
                     merge = 3
                 } else if (zoomEngine == 1) {
-                    evs = List(if (nrMode == 2) 8 else 6) { 0 }
+                    evs = List(if (fast) 4 else (if (nrMode == 2) 8 else 6)) { 0 }
                     merge = 3
                 } else {
-                    evs = List(6) { 0 }
+                    evs = List(if (fast) 4 else 6) { 0 }
                     merge = 4
                 }
+            } else if (fast) {
+                // দ্রুত মোড: একটাই ছবি (HDR হলে আলো-ছায়া সফটওয়্যারে ঠিক হয়)
             } else if (dark) {
                 evs = List(4) { 0 }
                 merge = 1
@@ -673,7 +683,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 return
             }
-            val setEv = try { cam.cameraControl.setExposureCompensationIndex(evs[i]) } catch (e: Throwable) { null }
+            val setEv = if (evs[i] != 0 || merge == 2) {
+                try { cam.cameraControl.setExposureCompensationIndex(evs[i]) } catch (e: Throwable) { null }
+            } else null
             val go = Runnable {
                 ic.takePicture(camExec, object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
@@ -703,7 +715,7 @@ class MainActivity : AppCompatActivity() {
 
         if (soft) {
             val zf = try { cam.cameraControl.setZoomRatio(1f) } catch (e: Throwable) { null }
-            if (zf != null) zf.addListener({ main.postDelayed({ next(0) }, 250) }, mainEx)
+            if (zf != null) zf.addListener({ main.postDelayed({ next(0) }, 120) }, mainEx)
             else next(0)
         } else {
             next(0)
