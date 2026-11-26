@@ -158,7 +158,7 @@ object Pipeline {
         val y0 = ((sh0 - ch) / 2) and 1.inv()
         val rect = Rect(x0, y0, x0 + cw, y0 + ch)
         var sample = 1
-        while ((cw / sample).toLong() * (ch / sample) > 16_000_000L) sample *= 2
+        while ((cw / sample).toLong() * (ch / sample) > 18_000_000L) sample *= 2
 
         val ghost = if (p.dark) 160 else 100
         val m = merge(shotsX, rect, sample, p.merge, ghost)
@@ -211,7 +211,7 @@ object Pipeline {
             var ch2 = mh
             var passes = 0
             while (max(cw2, ch2) < 1500 && passes < 3) {
-                val rr = aiUpscale(cx, cw2, ch2, 2, sr!!, 120, progress) ?: break
+                val rr = aiUpscale(cx, cw2, ch2, 2, sr!!, 40, progress) ?: break
                 cx = rr.px
                 cw2 = rr.w
                 ch2 = rr.h
@@ -244,7 +244,7 @@ object Pipeline {
             if (useAi) {
                 val box = if (rotatedEarly) personBox(px0, mw, mh) else null
                 val r = if (box != null) aiSubject(px0, mw, mh, box, nw, nh, p.ai, sr!!, progress)
-                else aiUpscale(px0, mw, mh, p.ai, sr!!, 90, progress)
+                else aiUpscale(px0, mw, mh, p.ai, sr!!, 35, progress)
                 if (r != null) {
                     px0 = r.px
                     if (abs(r.w - nw) > 8 || abs(r.h - nh) > 8) {
