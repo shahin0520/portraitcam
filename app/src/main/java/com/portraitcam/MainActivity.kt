@@ -106,7 +106,7 @@ class MainActivity : AppCompatActivity() {
     private var mode = 1                 // 0 NIGHT, 1 PHOTO, 2 PORTRAIT
     private var hdrMode = 1              // 0 OFF, 1 AUTO, 2 ON
     private var nrMode = 1               // 0 OFF, 1 ON, 2 MAX
-    private var zoomEngine = 1           // 0 PLAIN, 1 SR (multi-frame super-res), 2 AI
+    private var zoomEngine = 2           // AI সুপার-রেজোলিউশন ডিফল্ট
     private var teleOn = true
     private var gridOn = false
     private var timerSec = 0
@@ -118,7 +118,7 @@ class MainActivity : AppCompatActivity() {
     private val camExec = Executors.newSingleThreadExecutor()
     private val quickExec = Executors.newSingleThreadExecutor()
     private var look = 1                 // 0 NATURAL, 1 S25, 2 CRISP
-    private var speed = 0                // 0 FAST (১টা ছবি, দ্রুত), 1 QUALITY (কয়েকটা ছবি মিলিয়ে)
+    private var speed = 1                // ডিফল্ট QUALITY: জুমে বেশি ফ্রেম একত্র করা
     private val procExec = Executors.newSingleThreadExecutor()
     private val miscExec = Executors.newSingleThreadExecutor()
     private val jobsPending = AtomicInteger(0)
@@ -167,7 +167,7 @@ class MainActivity : AppCompatActivity() {
         preview = findViewById(R.id.preview)
         previewHolder = findViewById(R.id.previewHolder)
         preview.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-        preview.scaleType = PreviewView.ScaleType.FIT_START
+        preview.scaleType = PreviewView.ScaleType.FILL_CENTER
         ivFreeze = findViewById(R.id.ivFreeze)
         grid = findViewById(R.id.grid)
         icSettings = findViewById(R.id.icSettings)
@@ -212,34 +212,13 @@ class MainActivity : AppCompatActivity() {
         gallery.clipToOutline = true
         gallery.outlineProvider = ViewOutlineProvider.BACKGROUND
 
-        // প্রিভিউ ৩:৪, গোল কোনা (S24-এর মতো)
-        preview.post {
-            val h4 = preview.width * 4 / 3
-            for (v in listOf<View>(previewHolder, ivFreeze, grid)) {
-                val lp = v.layoutParams
-                lp.height = h4
-                v.layoutParams = lp
-            }
-            val rad = 22f * resources.displayMetrics.density
-            val op = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, rad)
-                }
-            }
-            previewHolder.outlineProvider = op
-            previewHolder.clipToOutline = true
-            ivFreeze.outlineProvider = op
-            ivFreeze.clipToOutline = true
-        }
-
+        // S25 Ultra-ধাঁচের edge-to-edge full-screen camera preview.
         chips = listOf(
             findViewById<TextView>(R.id.z05) to 0.5f,
             findViewById<TextView>(R.id.z1) to 1f,
             findViewById<TextView>(R.id.z2) to 2f,
             findViewById<TextView>(R.id.z3) to 3f,
-            findViewById<TextView>(R.id.z5) to 5f,
-            findViewById<TextView>(R.id.z30) to 30f,
-            findViewById<TextView>(R.id.z100) to 100f
+            findViewById<TextView>(R.id.z5) to 5f
         )
         chips.forEach { (v, r) -> v.setOnClickListener { setZoom(r) } }
 
@@ -508,7 +487,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setZoom(r: Float) {
         val z = camera?.cameraInfo?.zoomState?.value
-        vz = r.coerceIn(z?.minZoomRatio ?: 1f, 100f)
+        vz = r.coerceIn(z?.minZoomRatio ?: 1f, 10f)
         applyZoom()
     }
 
