@@ -167,7 +167,7 @@ class MainActivity : AppCompatActivity() {
         preview = findViewById(R.id.preview)
         previewHolder = findViewById(R.id.previewHolder)
         preview.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-        preview.scaleType = PreviewView.ScaleType.FILL_CENTER
+        preview.scaleType = PreviewView.ScaleType.FIT_START
         ivFreeze = findViewById(R.id.ivFreeze)
         grid = findViewById(R.id.grid)
         icSettings = findViewById(R.id.icSettings)
@@ -212,7 +212,26 @@ class MainActivity : AppCompatActivity() {
         gallery.clipToOutline = true
         gallery.outlineProvider = ViewOutlineProvider.BACKGROUND
 
-        // S25 Ultra-ধাঁচের edge-to-edge full-screen camera preview.
+        // প্রিভিউ ৩:৪, গোল কোনা (S24-এর মতো)
+        preview.post {
+            val h4 = preview.width * 4 / 3
+            for (v in listOf<View>(previewHolder, ivFreeze, grid)) {
+                val lp = v.layoutParams
+                lp.height = h4
+                v.layoutParams = lp
+            }
+            val rad = 22f * resources.displayMetrics.density
+            val op = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, rad)
+                }
+            }
+            previewHolder.outlineProvider = op
+            previewHolder.clipToOutline = true
+            ivFreeze.outlineProvider = op
+            ivFreeze.clipToOutline = true
+        }
+
         chips = listOf(
             findViewById<TextView>(R.id.z05) to 0.5f,
             findViewById<TextView>(R.id.z1) to 1f,
