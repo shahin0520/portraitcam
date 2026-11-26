@@ -7,8 +7,8 @@
     <FrameLayout
         android:id="@+id/previewHolder"
         android:layout_width="match_parent"
-        android:layout_height="400dp"
-        android:layout_marginTop="60dp"
+        android:layout_height="match_parent"
+        android:layout_marginTop="0dp"
         android:clipChildren="true">
         <androidx.camera.view.PreviewView
             android:id="@+id/preview"
@@ -19,16 +19,16 @@
     <ImageView
         android:id="@+id/ivFreeze"
         android:layout_width="match_parent"
-        android:layout_height="400dp"
-        android:layout_marginTop="60dp"
+        android:layout_height="match_parent"
+        android:layout_marginTop="0dp"
         android:scaleType="fitXY"
         android:visibility="gone" />
 
     <com.portraitcam.GridView
         android:id="@+id/grid"
         android:layout_width="match_parent"
-        android:layout_height="400dp"
-        android:layout_marginTop="60dp"
+        android:layout_height="match_parent"
+        android:layout_marginTop="0dp"
         android:visibility="gone" />
 
     <LinearLayout
@@ -150,9 +150,7 @@
             <TextView android:id="@+id/z1" style="@style/Chip" android:text="1x" />
             <TextView android:id="@+id/z2" style="@style/Chip" android:text="2x" />
             <TextView android:id="@+id/z3" style="@style/Chip" android:text="3x" />
-            <TextView android:id="@+id/z5" style="@style/Chip" android:text="10x" />
-            <TextView android:id="@+id/z30" style="@style/Chip" android:text="30x" />
-            <TextView android:id="@+id/z100" style="@style/Chip" android:text="100x" />
+            <TextView android:id="@+id/z5" style="@style/Chip" android:text="5x" />
         </LinearLayout>
 
         <LinearLayout
