@@ -5,7 +5,14 @@ plugins {
 android {
     namespace = "com.telepro.camera"
     compileSdk = 35
-    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17\n    }\n    kotlinOptions { jvmTarget = "17" }\n    defaultConfig {
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    defaultConfig {
         applicationId = "com.telepro.camera"
         minSdk = 26
         targetSdk = 35
