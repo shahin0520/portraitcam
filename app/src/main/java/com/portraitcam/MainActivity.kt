@@ -118,7 +118,7 @@ class MainActivity : AppCompatActivity() {
     private val camExec = Executors.newSingleThreadExecutor()
     private val quickExec = Executors.newSingleThreadExecutor()
     private var look = 1                 // 0 NATURAL, 1 S25, 2 CRISP
-    private var speed = 1                // ডিফল্ট QUALITY: জুমে বেশি ফ্রেম একত্র করা
+    private var speed = 0                // ডিফল্ট FAST: কম ফ্রেমে দ্রুত ক্যাপচার, SR বজায়
     private val procExec = Executors.newSingleThreadExecutor()
     private val miscExec = Executors.newSingleThreadExecutor()
     private val jobsPending = AtomicInteger(0)
@@ -326,7 +326,7 @@ class MainActivity : AppCompatActivity() {
         applyLook()
         updateTop()
         updateModeUi()
-        miscExec.execute { Pipeline.warmUp() }
+        miscExec.execute { Pipeline.warmUp(); try { sr.load("sr_hq.tflite") } catch (e: Throwable) { } }
         if (cameraGranted()) startCamera() else permLauncher.launch(Manifest.permission.CAMERA)
     }
 
@@ -601,10 +601,10 @@ class MainActivity : AppCompatActivity() {
             } else if (zoom > 1.4f && zoomEngine != 0) {
                 // সুপার-রেজোলিউশন জুম: কয়েকটা ছবি, হাতের কাঁপুনি কাজে লাগানো
                 if (zoom > 3.5f) {
-                    evs = List(if (fast) (if (nrMode == 2) 8 else 6) else (if (nrMode == 2) 12 else 10)) { 0 }
+                    evs = List(if (fast) 3 else (if (nrMode == 2) 6 else 5)) { 0 }
                     merge = 3
                 } else if (zoomEngine == 1) {
-                    evs = List(if (fast) 4 else (if (nrMode == 2) 8 else 6)) { 0 }
+                    evs = List(if (fast) 3 else (if (nrMode == 2) 5 else 4)) { 0 }
                     merge = 3
                 } else {
                     evs = List(if (fast) 4 else 6) { 0 }
