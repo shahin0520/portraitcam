@@ -346,6 +346,11 @@ object Pipeline {
         var out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(px, 0, w, 0, 0, w, h)
         px = IntArray(0)
+        // 2x/3x portrait-এ মুখের সূক্ষ্ম texture ফিরিয়ে আনি; পুরো ছবিতে অতিরিক্ত sharpening নয়।
+        if (p.portrait && z in 1.5f..3.5f) {
+            progress("মুখের ডিটেইল ঠিক করা হচ্ছে…")
+            if (portraitFaceDetail(out)) note = note + " | Face detail"
+        }
         if (mask != null) {
             progress("ব্যাকগ্রাউন্ড ব্লার…")
             val bgScale = if (p.tele && p.softZoom && z > 1.05f) (1f + 0.10f * (z - 1f)).coerceAtMost(1.25f) else 1f
@@ -1267,6 +1272,70 @@ object Pipeline {
         val res = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
         res.setPixels(outPx, 0, sw, 0, 0, sw, sh)
         return res
+    }
+
+    // 2x/3x portrait: মুখের ভেতরে low-noise luminance micro-contrast বাড়ায়।
+    // Skin tone/color অপরিবর্তিত থাকে; চোখ, ভ্রু ও চুলের সূক্ষ্ম edge-এ সীমিত কাজ করে।
+    private fun portraitFaceDetail(bmp: Bitmap): Boolean {
+        return try {
+            val scale = min(1f, 720f / max(bmp.width, bmp.height))
+            val sw = max(16, (bmp.width * scale).toInt())
+            val sh = max(16, (bmp.height * scale).toInt())
+            val small = Bitmap.createScaledBitmap(bmp, sw, sh, true)
+            val faces = try {
+                Tasks.await(faceDet.process(InputImage.fromBitmap(small, 0)), 8, TimeUnit.SECONDS)
+            } finally {
+                small.recycle()
+            }
+            if (faces.isEmpty()) return false
+            var changed = false
+            for (face in faces) {
+                val b = face.boundingBox
+                val padX = (b.width() * 0.12f).toInt()
+                val padY = (b.height() * 0.12f).toInt()
+                val left = ((b.left - padX) / scale).toInt().coerceIn(0, bmp.width - 2)
+                val top = ((b.top - padY) / scale).toInt().coerceIn(0, bmp.height - 2)
+                val right = ((b.right + padX) / scale).toInt().coerceIn(left + 2, bmp.width)
+                val bottom = ((b.bottom + padY) / scale).toInt().coerceIn(top + 2, bmp.height)
+                val w = right - left
+                val h = bottom - top
+                if (w < 24 || h < 24) continue
+                val px = IntArray(w * h)
+                bmp.getPixels(px, 0, w, left, top, w, h)
+                val out = px.copyOf()
+                val cx = w * 0.5f
+                val cy = h * 0.5f
+                val rx = w * 0.58f
+                val ry = h * 0.58f
+                for (y in 1 until h - 1) {
+                    val row = y * w
+                    val ny = (y - cy) / ry
+                    for (x in 1 until w - 1) {
+                        val nx = (x - cx) / rx
+                        if (nx * nx + ny * ny > 1.05f) continue
+                        val i = row + x
+                        val c = px[i]
+                        val avg = (lum(px[i - 1]) + lum(px[i + 1]) +
+                            lum(px[i - w]) + lum(px[i + w])) * 0.25f
+                        val d = lum(c) - avg
+                        val ad = abs(d)
+                        if (ad < 3f) continue
+                        val amount = (ad - 3f).coerceAtMost(28f) * 0.22f
+                        val delta = (if (d > 0f) amount else -amount).toInt()
+                        if (delta == 0) continue
+                        val r = (((c shr 16) and 255) + delta).coerceIn(0, 255)
+                        val g = (((c shr 8) and 255) + delta).coerceIn(0, 255)
+                        val bl = ((c and 255) + delta).coerceIn(0, 255)
+                        out[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or bl
+                    }
+                }
+                bmp.setPixels(out, 0, w, left, top, w, h)
+                changed = true
+            }
+            changed
+        } catch (e: Throwable) {
+            false
+        }
     }
 
     // ---------- ফেস স্মুদ ----------
