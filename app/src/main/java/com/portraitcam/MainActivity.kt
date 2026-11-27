@@ -467,9 +467,7 @@ class MainActivity : AppCompatActivity() {
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
                         .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-                        .setResolutionStrategy(
-                            ResolutionStrategy(Size(4640, 3480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
-                        ).build()
+                        .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY).build()
                 )
                 .build()
             imageCapture = ic
@@ -840,7 +838,7 @@ class MainActivity : AppCompatActivity() {
             val x0 = ((fw - cw) / 2) and 1.inv()
             val y0 = ((fh - ch) / 2) and 1.inv()
             var sample = 1
-            while ((cw / sample).toLong() * (ch / sample) > 6_000_000L) sample *= 2
+            while ((cw / sample).toLong() * (ch / sample) > 18_000_000L) sample *= 2
             val o = BitmapFactory.Options().apply { inSampleSize = sample }
             var bmp = dec.decodeRegion(Rect(x0, y0, x0 + cw, y0 + ch), o)
             dec.recycle()
@@ -851,14 +849,10 @@ class MainActivity : AppCompatActivity() {
             val rot = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mx, true)
             if (rot !== bmp) bmp.recycle()
             bmp = rot
-            val ls = max(bmp.width, bmp.height)
-            if (z > 1.05f && ls < 2400) {
-                val sc = 2400f / ls
-                val up = Bitmap.createScaledBitmap(bmp, (bmp.width * sc).toInt(), (bmp.height * sc).toInt(), true)
-                bmp.recycle()
-                bmp = up
-            }
-            contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            // Do not enlarge a low-resolution digital crop and present it as real detail.
+            // Keep the actual decoded crop dimensions; the full-resolution processing pass
+            // will replace this temporary file when it finishes.
+            contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 100, it) }
             thumb = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
             bmp.recycle()
         }
