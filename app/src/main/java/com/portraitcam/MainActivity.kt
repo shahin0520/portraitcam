@@ -602,7 +602,10 @@ class MainActivity : AppCompatActivity() {
             } else if (zoom > 1.4f && zoomEngine != 0) {
                 // সুপার-রেজোলিউশন জুম: কয়েকটা ছবি, হাতের কাঁপুনি কাজে লাগানো
                 // সব টেলি জুমে একই sub-pixel multi-frame SR pipeline ব্যবহার
-                evs = List(if (fast) 4 else (if (nrMode == 2) 6 else 5)) { 0 }
+                // 5x-এ বেশি frame: moving subject থাকলে alignment/ghost rejection খারাপ frame বাদ দেবে।
+                val burstCount = if (zoom >= 4f) (if (fast) 5 else 7)
+                    else if (fast) 4 else (if (nrMode == 2) 6 else 5)
+                evs = List(burstCount) { 0 }
                 merge = 3
             } else if (fast) {
                 // দ্রুত মোড: একটাই ছবি (HDR হলে আলো-ছায়া সফটওয়্যারে ঠিক হয়)
@@ -700,7 +703,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
             }
-            val delay = if (merge == 2) 300L else 30L
+            val delay = if (merge == 2) 300L else if (merge == 3 && zoom >= 4f) 55L else 30L
             if (setEv != null) setEv.addListener({ main.postDelayed(go, delay) }, mainEx)
             else main.postDelayed(go, delay)
         }
