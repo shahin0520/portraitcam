@@ -497,9 +497,13 @@ class MainActivity : AppCompatActivity() {
         val z = camera?.cameraInfo?.zoomState?.value
         val mn = z?.minZoomRatio ?: 1f
         val mx = z?.maxZoomRatio ?: 1f
-        val camZ = vz.coerceIn(mn, mx)
+        // সফটওয়্যার জুমে ImageCapture-কে 1x-এ রাখি। Pipeline নিজেই পূর্ণ
+        // সেন্সর JPEG থেকে একবার crop করবে; hardware zoom + software crop
+        // একসাথে হলে একই zoom দ্বিগুণ হয়ে detail নষ্ট হয়।
+        val softwareCrop = vz > 1.05f && procMode != 2
+        val camZ = if (softwareCrop) mn else vz.coerceIn(mn, mx)
         camera?.cameraControl?.setZoomRatio(camZ)
-        val extra = if (vz > camZ) vz / camZ else 1f
+        val extra = if (softwareCrop) vz else if (vz > camZ) vz / camZ else 1f
         preview.scaleX = extra
         preview.scaleY = extra
         updateZoomUi(vz)
