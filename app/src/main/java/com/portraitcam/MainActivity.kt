@@ -462,7 +462,8 @@ class MainActivity : AppCompatActivity() {
             val pv = Preview.Builder().build().also { it.setSurfaceProvider(preview.surfaceProvider) }
             val ic = ImageCapture.Builder()
                 .setFlashMode(flash)
-                .setCaptureMode(if (speed == 0) ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY else ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setJpegQuality(100)
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
                         .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
@@ -600,16 +601,9 @@ class MainActivity : AppCompatActivity() {
                 merge = 1
             } else if (zoom > 1.4f && zoomEngine != 0) {
                 // সুপার-রেজোলিউশন জুম: কয়েকটা ছবি, হাতের কাঁপুনি কাজে লাগানো
-                if (zoom > 3.5f) {
-                    evs = List(if (fast) 3 else (if (nrMode == 2) 6 else 5)) { 0 }
-                    merge = 3
-                } else if (zoomEngine == 1) {
-                    evs = List(if (fast) 3 else (if (nrMode == 2) 5 else 4)) { 0 }
-                    merge = 3
-                } else {
-                    evs = List(if (fast) 4 else 6) { 0 }
-                    merge = 4
-                }
+                // সব টেলি জুমে একই sub-pixel multi-frame SR pipeline ব্যবহার
+                evs = List(if (fast) 4 else (if (nrMode == 2) 6 else 5)) { 0 }
+                merge = 3
             } else if (fast) {
                 // দ্রুত মোড: একটাই ছবি (HDR হলে আলো-ছায়া সফটওয়্যারে ঠিক হয়)
             } else if (dark) {
@@ -637,7 +631,7 @@ class MainActivity : AppCompatActivity() {
             zoom = zoom,
             softZoom = soft,
             merge = merge,
-            hdrSingle = hdrWanted && merge != 2,
+            hdrSingle = hdrWanted && merge != 2 && zoom <= 1.4f,
             night = mode == 0,
             portrait = mode == 2,
             blur = (blurSeek.progress + (if (teleOn && soft && mode == 2) ((zoom - 1f) * 8f).toInt().coerceAtMost(16) else 0)).coerceAtMost(100),
@@ -645,9 +639,9 @@ class MainActivity : AppCompatActivity() {
             beauty = if (mode == 0) 0 else beautySeek.progress,
             filter = filterIdx,
             ai = zoomEngine,
-            bright = brightSeek.progress,
-            detail = detailSeek.progress,
-            nrBoost = when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f },
+            bright = if (zoom > 1.4f) 0 else brightSeek.progress,
+            detail = if (zoom > 1.4f) min(detailSeek.progress, 45) else detailSeek.progress,
+            nrBoost = if (zoom > 1.4f) 0.35f else when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f },
             dark = dark,
             native = false
         )
