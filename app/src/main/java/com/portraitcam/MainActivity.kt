@@ -117,7 +117,7 @@ class MainActivity : AppCompatActivity() {
 
     private val camExec = Executors.newSingleThreadExecutor()
     private val quickExec = Executors.newSingleThreadExecutor()
-    private var look = 1                 // 0 NATURAL, 1 S25, 2 CRISP
+    private var look = 0                 // 0 NATURAL, 1 S25, 2 CRISP
     private var speed = 0                // ডিফল্ট FAST: কম ফ্রেমে দ্রুত ক্যাপচার, SR বজায়
     private val procExec = Executors.newSingleThreadExecutor()
     private val miscExec = Executors.newSingleThreadExecutor()
@@ -646,9 +646,9 @@ class MainActivity : AppCompatActivity() {
             ai = zoomEngine,
             bright = if (zoom > 1.4f) 0 else brightSeek.progress,
             detail = if (zoom > 1.4f) min(detailSeek.progress, 45) else detailSeek.progress,
-            nrBoost = if (zoom > 1.4f) 0.35f else when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f },
+            nrBoost = if (zoom > 1.4f) (if (dark) 0.15f else 0f) else when (nrMode) { 0 -> -0.15f; 2 -> 0.25f; else -> 0f },
             dark = dark,
-            native = false
+            native = zoom <= 1.05f && mode == 2
         )
 
         if (soft) {
@@ -777,7 +777,33 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- ব্যাকগ্রাউন্ডে প্রসেস (এর মধ্যেই আবার ছবি তোলা যায়) ----------
 
+    private fun jpegDimensions(bytes: ByteArray): String {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
+        return "${o.outWidth}×${o.outHeight}"
+    }
+
     private fun submitJob(shots: List<Shot>, p: Params) {
+        // 1x rear Photo: keep CameraX's original JPEG byte-for-byte. No bitmap round-trip,
+        // no denoise/sharpen pass and no second JPEG encode that can soften fine detail.
+        val nativePhoto = p.zoom <= 1.05f && !p.softZoom && !p.portrait && !p.night &&
+            !p.front && p.filter == 0 && p.bright == 0 && p.beauty == 0
+        if (nativePhoto) {
+            quickExec.execute {
+                try {
+                    val saved = quickSave(shots[0], p)
+                    val dimensions = jpegDimensions(shots[0].jpeg)
+                    runOnUiThread {
+                        lastUri = saved.first
+                        if (saved.second != null) gallery.setImageBitmap(saved.second)
+                        Toast.makeText(this, "Original JPEG: $dimensions px — প্রসেসিং/ডাউনস্কেলিং করা হয়নি", Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Throwable) {
+                    runOnUiThread { Toast.makeText(this, "ছবি সেভ হয়নি: ${e.message}", Toast.LENGTH_LONG).show() }
+                }
+            }
+            return
+        }
         jobsPending.incrementAndGet()
         updateJobsUi()
         val quick = java.util.concurrent.CompletableFuture<Uri?>()
@@ -873,6 +899,7 @@ class MainActivity : AppCompatActivity() {
                 contentResolver.openOutputStream(quickUri, "wt")!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 96, it) }
                 quickUri
             } else save(bmp)
+            val outputSize = "${bmp.width}×${bmp.height}"
             val th = Bitmap.createScaledBitmap(bmp, 160, max(1, 160 * bmp.height / bmp.width), true)
             bmp.recycle()
             val note = Pipeline.note
@@ -884,7 +911,7 @@ class MainActivity : AppCompatActivity() {
                     this,
                     (if (noPerson) "মানুষ পাওয়া যায়নি, সাধারণ প্রসেস হয়েছে" else "✔ ছবি উন্নত হয়েছে") +
                         (if (note.isNotEmpty()) "\n" + note else "") +
-                        (if (diag.isNotEmpty()) "\n" + diag else ""),
+                        (if (diag.isNotEmpty()) "\n" + diag else "") + "\nআউটপুট: " + outputSize + " px",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -980,7 +1007,7 @@ class MainActivity : AppCompatActivity() {
         }
         val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v)
             ?: throw IllegalStateException("সেভ করা যায়নি")
-        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 96, it) }
+        contentResolver.openOutputStream(uri)!!.use { bmp.compress(Bitmap.CompressFormat.JPEG, 98, it) }
         v.clear()
         v.put(MediaStore.Images.Media.IS_PENDING, 0)
         contentResolver.update(uri, v, null, null)

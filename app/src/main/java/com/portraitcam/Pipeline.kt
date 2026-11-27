@@ -215,7 +215,9 @@ object Pipeline {
         val sigma0 = estimateSigma(m.px, m.w, m.h)
         var sigma = sigma0 * (1f + p.nrBoost * 2f).coerceIn(0.5f, 1.8f)
         // টেলি ক্রপে noise দৃশ্যমান বেশি হয়; খুব কম σ হলে লুমা denoise একেবারেই চলত না.
-        if (z > 1.4f) sigma = max(sigma, 2.4f)
+        // On daylight digital zoom, preserve fine luminance texture; use stronger
+        // luma denoise only in genuinely dark scenes where noise is more distracting.
+        if (z > 1.4f) sigma = if (p.dark) max(sigma, 2.0f) else min(sigma, 1.7f)
         if (useAi) sigma *= 0.85f
         if (p.native) sigma = min(sigma, 3f)
         progress("নয়েজ কমানো হচ্ছে…")
