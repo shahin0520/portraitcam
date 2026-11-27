@@ -136,15 +136,54 @@ object Pipeline {
         )
     }
 
+    // JPEG file size sharpness নয়: প্রতিটি burst frame-এর sampled Laplacian variance মাপি.
+    private fun sharpnessScore(shot: Shot): Float {
+        return try {
+            val dec = BitmapRegionDecoder.newInstance(shot.jpeg, 0, shot.jpeg.size, false)
+            val rect = Rect(0, 0, dec.width, dec.height)
+            val opt = BitmapFactory.Options().apply {
+                inSampleSize = 8
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val bmp = dec.decodeRegion(rect, opt)
+            dec.recycle()
+            val w = bmp.width
+            val h = bmp.height
+            if (w < 8 || h < 8) { bmp.recycle(); return 0f }
+            val px = IntArray(w * h)
+            bmp.getPixels(px, 0, w, 0, 0, w, h)
+            bmp.recycle()
+            var sum = 0.0
+            var sum2 = 0.0
+            var n = 0
+            for (y in 2 until h - 2 step 2) {
+                val row = y * w
+                for (x in 2 until w - 2 step 2) {
+                    val c = lum(px[row + x])
+                    val lap = 4 * c - lum(px[row + x - 1]) - lum(px[row + x + 1]) -
+                        lum(px[row - w + x]) - lum(px[row + w + x])
+                    val v = lap.toDouble()
+                    sum += v
+                    sum2 += v * v
+                    n++
+                }
+            }
+            if (n == 0) 0f else (sum2 / n - (sum / n) * (sum / n)).coerceAtLeast(0.0).toFloat()
+        } catch (e: Throwable) {
+            0f
+        }
+    }
+
     fun run(shots: List<Shot>, p: Params, sr: SuperRes?, depthEst: DepthEst?, progress: (String) -> Unit): Pair<Bitmap, Boolean> {
         val t0 = System.currentTimeMillis()
         progress("ফ্রেম মেলানো হচ্ছে…")
-        // সবচেয়ে ধারালো ফ্রেম (বড় JPEG) আগে, ঝাপসা ফ্রেম বাদ
+        // JPEG ফাইল সাইজ দিয়ে sharpness বোঝা যায় না; আসল edge detail মেপে frame বাছাই.
         var shotsX = shots
         if ((p.merge == 1 || p.merge >= 3) && shots.size >= 3) {
-            val ordered = shots.sortedByDescending { it.jpeg.size }
-            val keep = ordered.filter { it.jpeg.size >= ordered[0].jpeg.size * (if (p.merge >= 3) 0.75 else 0.85) }
-            shotsX = if (keep.size >= 2) keep else ordered.take(2)
+            val ranked = shots.map { it to sharpnessScore(it) }.sortedByDescending { it.second }
+            val best = ranked.first().second
+            val keep = ranked.filter { it.second >= max(1f, best * 0.48f) }.map { it.first }
+            shotsX = if (keep.size >= 3) keep else ranked.take(3).map { it.first }
         }
         val first = shotsX[0]
         val dec0 = BitmapRegionDecoder.newInstance(first.jpeg, 0, first.jpeg.size, false)
@@ -175,7 +214,9 @@ object Pipeline {
         val useAi = p.ai == 2 && sr != null && up > 1.01f && m.scale == 1f && !hiZoom
         val sigma0 = estimateSigma(m.px, m.w, m.h)
         var sigma = sigma0 * (1f + p.nrBoost * 2f).coerceIn(0.5f, 1.8f)
-        if (useAi) sigma *= 0.6f
+        // টেলি ক্রপে noise দৃশ্যমান বেশি হয়; খুব কম σ হলে লুমা denoise একেবারেই চলত না.
+        if (z > 1.4f) sigma = max(sigma, 2.4f)
+        if (useAi) sigma *= 0.85f
         if (p.native) sigma = min(sigma, 3f)
         progress("নয়েজ কমানো হচ্ছে…")
         denoise(m.px, m.w, m.h, sigma)
@@ -295,9 +336,10 @@ object Pipeline {
         if (!p.native) tonemap(px, w, h, hdrSingle2, p.night)
         val dk = p.detail / 100f
         val core = (0.8f * sigma + 2f).toInt().coerceIn(2, 10)
-        var amt = if (p.native) 0.5f else 0.4f + dk * 0.8f
-        amt = if (aiDone) amt * 0.5f else amt * (1f + 0.08f * (z - 1f)).coerceAtMost(1.3f) * (if (m.scale > 1f) 1.25f else 1f)
-        val ck = if (p.native) dk * 0.15f else dk * 0.3f * (if (aiDone) 0.6f else 1f)
+        var amt = if (p.native) 0.5f else if (z > 1.4f) 0.28f + dk * 0.42f else 0.4f + dk * 0.8f
+        amt = if (aiDone) amt * 0.5f else amt * (1f + 0.025f * (z - 1f)).coerceAtMost(1.12f) * (if (m.scale > 1f) 1.05f else 1f)
+        // অতিরিক্ত sharpening নয়েজ ও JPEG ব্লককে আরও স্পষ্ট করে; zoom-এ clarity কম রাখি.
+        val ck = if (p.native) dk * 0.15f else dk * (if (z > 1.4f) 0.16f else 0.3f) * (if (aiDone) 0.6f else 1f)
         progress("ডিটেইলস বাড়ানো হচ্ছে…")
         clarity(px, w, h, ck)
         sharpen2(px, w, h, amt, core)
